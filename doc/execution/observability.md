@@ -33,11 +33,20 @@ Build the varanos workspace:
 zig build
 ```
 
-Run a valuation against a sample company:
+Run a valuation with complete inputs:
 
 ```bash
-zig build run -- val --company AAPL
+zig build run -- val --inputs inputs.json
 ```
+
+Yamori is a financial library — it does not accept a ticker symbol alone. A
+valuation requires full inputs: financial statements (income statement, balance
+sheet, cash flow), market data (share price, shares outstanding, risk-free
+rate, ERP), geographic exposure, Damodaran sector assignment, peer-set
+assignment, and policy choices (R&D life, lease treatment, discount
+convention). The `--inputs` flag accepts a JSON file that supplies every field
+the `ValuationInputs` struct requires. Without these inputs the engine cannot
+run.
 
 Run a deterministic golden-test replay:
 
@@ -55,7 +64,7 @@ The `val` command prints:
 Example output shape:
 
 ```text
-varanos: Phase 0 valuation completed for AAPL
+varanos: Phase 0 valuation completed
 stages:
   [0] ingest      state=completed   validated=52 conflicts=2 gaps=3
   [1] resolve     state=completed   resolved=49 conflicts=2
