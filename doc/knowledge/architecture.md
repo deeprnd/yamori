@@ -60,7 +60,7 @@ ONE API
 
 ## 2. Runtime Foundation
 
-M1 establishes Yamori's durable runtime capabilities. Every domain milestone depends on these.
+Yamori's durable runtime capabilities form the foundation for all domain functionality.
 
 ### 2.1 Financial Formula Dependency Graph
 
@@ -210,15 +210,15 @@ Pins algorithms, pins RNG with explicit seed, enforces deterministic threading p
 
 ## 3. Backend Library Routing
 
-| Library | Domain | Capabilities | Milestone |
-|---------|--------|-------------|-----------|
-| **Apache Arrow C++** | All | Canonical memory representation, CSV I/O, compute registry, cross-language interchange, columnar operations | M1 |
-| **GNU GSL** | Valuation | Statistics (medians, outlier filtering), interpolation (transition paths), roots (reverse DCF bisection), RNG (Monte Carlo) | M2 |
-| **TA-Lib** | Technical Analysis | Moving averages (SMA, EMA, WMA, DEMA, TEMA, KAMA, MAMA, T3), oscillators (RSI, Stochastic, CCI, ROC, MOM), volatility (Bollinger Bands, ATR, ADX, SAR), volume (OBV, AD, ADOSC), candlestick patterns | M6 |
-| **QuantLib** | Options & Derivatives | Options pricing (European, American, exotic), fixed income (bonds, swaps, cap/floor), numerical methods (Monte Carlo, finite-difference, trees), volatility surfaces, yield curve construction | M9 |
-| **BLAS + LAPACK** | Portfolio Analytics | Vector/matrix operations (GEMM, axpy, dot), eigenvalue decomposition (DSYEVD), SVD (DBDSDC), Cholesky (DPOTRF), QR (DGEQRF), linear solvers | M7 |
-| **Cuba** | Advanced Analytics | Multidimensional Monte Carlo (Vegas, Suave), deterministic adaptive integration (Divonne, Cuhre) | M8 |
-| **FFTW** | Advanced Analytics | Fast Fourier transforms (real/complex DFT, DCT, DST), multi-dimensional transforms, plan-based execution | M8 |
+| Library | Domain | Capabilities |
+|---------|--------|-------------|
+| **Apache Arrow C++** | All | Canonical memory representation, CSV I/O, compute registry, cross-language interchange, columnar operations |
+| **GNU GSL** | Valuation | Statistics (medians, outlier filtering), interpolation (transition paths), roots (reverse DCF bisection), RNG (Monte Carlo) |
+| **TA-Lib** | Technical Analysis | Moving averages (SMA, EMA, WMA, DEMA, TEMA, KAMA, MAMA, T3), oscillators (RSI, Stochastic, CCI, ROC, MOM), volatility (Bollinger Bands, ATR, ADX, SAR), volume (OBV, AD, ADOSC), candlestick patterns |
+| **QuantLib** | Options & Derivatives | Options pricing (European, American, exotic), fixed income (bonds, swaps, cap/floor), numerical methods (Monte Carlo, finite-difference, trees), volatility surfaces, yield curve construction |
+| **BLAS + LAPACK** | Portfolio Analytics | Vector/matrix operations (GEMM, axpy, dot), eigenvalue decomposition (DSYEVD), SVD (DBDSDC), Cholesky (DPOTRF), QR (DGEQRF), linear solvers |
+| **Cuba** | Advanced Analytics | Multidimensional Monte Carlo (Vegas, Suave), deterministic adaptive integration (Divonne, Cuhre) |
+| **FFTW** | Advanced Analytics | Fast Fourier transforms (real/complex DFT, DCT, DST, multi-dimensional transforms, plan-based execution) |
 
 A new library enters Yamori only when a domain requires capabilities the current backends do not provide — not because the library happens to be useful.
 
@@ -267,7 +267,7 @@ Selection depends on platform, CPU capabilities, datatype, input size, requested
 
 All domains share the same runtime. Each installs as a set of named formula nodes on the dependency graph, registered through the backend router.
 
-### 4.1 M1 — Runtime Foundation
+### 4.1 Runtime Foundation
 
 **Purpose.** The dependency graph, backend router, shared-memory representation, C ABI, and deterministic execution policy — the infrastructure that makes Yamori a composable runtime rather than a single-domain calculator.
 
@@ -275,9 +275,7 @@ All domains share the same runtime. Each installs as a set of named formula node
 
 **Key functions:** `graph.resolve()`, `router.dispatch()`, `array.mul()`, `workspace_create()`, `run_valuation()`.
 
-**Completion signal.** The dependency graph resolves derived metrics in deterministic topological order. The backend router dispatches every operation through the capability registry. Shared-memory buffers are zero-copy accessible across processes. The C ABI exposes all runtime capabilities with ABI compatibility tests passing. The deterministic execution policy produces bit-identical results across four platforms for the same inputs.
-
-### 4.2 M2 — Damodaran Valuation Engine
+### 4.2 Valuation Engine
 
 **Purpose.** A working Damodaran-style FCFF discounted cash flow engine that accepts financial statements and policy inputs and produces a per-share intrinsic value estimate.
 
@@ -294,25 +292,23 @@ ingest ──► resolve ──► adjust ──► derive ──► project ─
 
 **Audit severities:** Error (blocks rendering), Warn (strain indicators), Info (conventions). Errors cover: stable growth within risk-free rate, WACC − g ≥ 100bp, currency consistency, CRP derived from default spreads (not raw), terminal value share < 75%, adjustments propagated completely, country risk netted, equity compensation handled exactly once.
 
-### 4.3 M3 — Financial Statement Ingestion
+### 4.3 Financial Statement Ingestion
 
-**Purpose.** Data integrity layer between raw financial filings and the cleaned inputs required by M2's engine.
+**Purpose.** Data integrity layer between raw financial filings and the cleaned inputs required by the valuation engine.
 
 **Key types:** `XbrlElement`, `SourceId`, `DatasetManifest`, `NormalizedPeriod`.
 
-**Key epics:** XBRL mapping (US-GAAP and IFRS to canonical names). R&D capitalization (amortizing asset, sector-dependent periods). Lease capitalization (discount-rate present value). Stock-based compensation deduction (Black-Scholes option valuation, treasury-method fallback). Base-year normalization with distortion detection. TTM calculation and source-priority resolution.
+**Key epics:** XBRL mapping (US-GAAP and IFRS to canonical names), R&D capitalization (amortizing asset, sector-dependent periods), lease capitalization (discount-rate present value), stock-based compensation deduction (Black-Scholes option valuation, treasury-method fallback), base-year normalization with distortion detection, TTM calculation and source-priority resolution.
 
 **Invariant.** Every adjusted metric carries provenance tracing to the source filing and specific adjustment applied.
 
-### 4.4 M4 — Cross-Checks, Sensitivity, and Monte Carlo
+### 4.4 Cross-Checks, Sensitivity, and Monte Carlo
 
 **Purpose.** Transforms a single deterministic valuation into a bounded, auditable range with probabilistic confidence intervals.
 
 **Key epics:** Reverse DCF (fixed-count bisection solver solving `DCF(g_high) − market_price = 0`). Relative-multiple cross-checks (implied P/E, P/S, EV/EBITDA). Sensitivity matrices (WACC/growth grid over the dependency graph). Scenario analysis (bull/base/bear/stress input sets with base-case preservation). Audit checks (severity-flagged assertions). Monte Carlo: random sampling (seeded distributions with hard constraints), runner (thousands of sampled inputs through `runValuation()`), summary (percentiles P5/P25/P50/P75/P95, valuation range), demo (end-to-end CSV → DCF → MC distribution).
 
-**Completion signal.** A single valuation run produces: deterministic per-share value, reverse DCF implied growth, sensitivity matrix, scenario distributions, Monte Carlo percentiles, and audit assertions — all reproducible from the same inputs and dataset manifest.
-
-### 4.5 M5 — Comparative Analysis, Reports, and Historical Replay
+### 4.5 Comparative Analysis, Reports, and Historical Replay
 
 **Purpose.** Extends single-company valuation to multi-company comparative analysis with exportable reports, historical replay, and deterministic audit trails.
 
@@ -320,9 +316,9 @@ ingest ──► resolve ──► adjust ──► derive ──► project ─
 
 **Key invariant.** Running any batch twice with the same inputs produces bit-identical results for every company.
 
-### 4.6 M6 — Technical Analysis
+### 4.6 Technical Analysis
 
-**Purpose.** First post-M4 domain proving the runtime generalizes beyond valuation. Integrates TA-Lib and builds the indicator formula framework.
+**Purpose.** First domain proving the runtime generalizes beyond valuation. Integrates TA-Lib and builds the indicator formula framework.
 
 **Library:** TA-Lib.
 
@@ -330,19 +326,19 @@ ingest ──► resolve ──► adjust ──► derive ──► project ─
 
 **Key insight.** Technical indicators on the same data as a valuation produce no cross-domain interference — they share the graph but use independent node sets.
 
-### 4.7 M7 — Portfolio Analytics
+### 4.7 Portfolio Analytics
 
-**Purpose.** Third post-M4 domain. Matrix-heavy computation where shared memory becomes operationally essential. Integrates BLAS and LAPACK.
+**Purpose.** Matrix-heavy computation where shared memory becomes operationally essential. Integrates BLAS and LAPACK.
 
 **Libraries:** BLAS, LAPACK.
 
 **Key epics:** BLAS/LAPACK integration and linear algebra registry. Covariance estimation (sample, rolling, EWMA, Ledoit-Wolf shrinkage). Factor models (PCA via SVD, factor regression via OLS/normal equations). Risk decomposition (factor/asset/marginal contributions, component VaR, risk parity). Portfolio optimization (Markowitz, min variance, max Sharpe, risk parity, Black-Litterman, constrained). Portfolio simulation and scenario analysis (historical + MC scenarios with BLAS-accelerated operations). Historical scenario analysis and backtesting.
 
-**Key insight.** This is where Yamori's shared-memory infrastructure (M1 Epic V1.3) becomes operationally essential — covariance matrices for large portfolios (100+ assets) must be shared across optimization, risk decomposition, and simulation processes without copying.
+**Key insight.** This is where Yamori's shared-memory infrastructure becomes operationally essential — covariance matrices for large portfolios (100+ assets) must be shared across optimization, risk decomposition, and simulation processes without copying.
 
-### 4.8 M8 — Advanced Analytics
+### 4.8 Advanced Analytics
 
-**Purpose.** Fourth post-M4 domain. High-dimensional integration and spectral analysis — the last major class of numerical methods that financial computation requires. Integrates Cuba and FFTW.
+**Purpose.** High-dimensional integration and spectral analysis — the last major class of numerical methods that financial computation requires. Integrates Cuba and FFTW.
 
 **Libraries:** Cuba, FFTW.
 
@@ -350,15 +346,15 @@ ingest ──► resolve ──► adjust ──► derive ──► project ─
 
 **Key insight.** Five domains — valuation, technical analysis, derivatives, portfolio analytics, advanced analytics — four library families (TA-Lib, QuantLib, BLAS/LAPACK, Cuba+FFTW), one dependency graph, one backend router, one deterministic execution policy.
 
-### 4.9 M9 — Options and Derivatives
+### 4.9 Options and Derivatives
 
-**Purpose.** Second post-M4 domain. Handles closed-form and numerically-intensive pricing. Integrates QuantLib.
+**Purpose.** Handles closed-form and numerically-intensive pricing. Integrates QuantLib.
 
 **Library:** QuantLib.
 
 **Key epics:** QuantLib integration and pricing registry. Equity options (European via Black-Scholes-Merton, American via binomial trees). Exotic options (barriers, Asians, lookbacks, compounds via MC and finite-difference). Fixed income instruments (zero-coupon, coupon-bearing bonds, swaps, caps/floors, swaptions). Volatility surface and yield curve management (bootstrapped, interpolated, shared-memory objects). Cross-domain demo (option pricing → exotic → fixed income → surfaces → curves through the same graph).
 
-**Key insight.** Fixed income yield curve infrastructure provides yield curve data useful for Damodaran cost-of-debt and risk-free rate lookups (M2), demonstrating cross-domain utility.
+**Key insight.** Fixed income yield curve infrastructure provides yield curve data useful for Damodaran cost-of-debt and risk-free rate lookups, demonstrating cross-domain utility.
 
 ---
 
@@ -372,16 +368,16 @@ CSV / Arrow data
        ▼
 financial series
        │
-       ├── M2/M3: ratios, valuation, FCFF, adjustments
-       ├── M4: reverse DCF, Monte Carlo, sensitivity
-       ├── M5: peer sets, reports, historical replay
-       ├── M6: technical indicators (price series)
-       ├── M7: factor models, risk, optimization (returns series)
-       ├── M8: multidimensional integration, spectral analysis
-       └── M9: options pricing, fixed income, vol surfaces (underlying, rate, vol)
+       ├── valuation & adjustments
+       ├── cross-checks, Monte Carlo, sensitivity
+       ├── comparative analysis, reports, historical replay
+       ├── technical indicators (price series)
+       ├── factor models, risk, optimization (returns series)
+       ├── multidimensional integration, spectral analysis
+       └── options pricing, fixed income, vol surfaces (underlying, rate, vol)
 ```
 
-The dependency graph built in M1 serves all domains. Each domain registers its operations as named nodes. The same backend router, shared-memory representation, C ABI, and deterministic execution policy apply uniformly. No domain duplicates M1 capabilities.
+The dependency graph serves all domains. Each domain registers its operations as named nodes. The same backend router, shared-memory representation, C ABI, and deterministic execution policy apply uniformly. No domain duplicates the foundation layer.
 
 ### 5.1 Composition Patterns
 
@@ -396,7 +392,7 @@ returns (Arrow compute)
      └── option input (QuantLib vol surface from realized vol)
 ```
 
-The same covariance matrix computed from Damodaran-adjusted fundamentals feeds into portfolio optimization. The same yield curve from QuantLib feeds Damodaran cost-of-debt. The same spectral decomposition feeds both cycle detection in M8 and signal filtering in M6.
+The same covariance matrix computed from Damodaran-adjusted fundamentals feeds into portfolio optimization. The same yield curve from QuantLib feeds Damodaran cost-of-debt. The same spectral decomposition feeds both cycle detection and signal filtering.
 
 ---
 
@@ -548,7 +544,6 @@ Yamori sits between applications and the fragmented native quantitative ecosyste
 
 - Product bet, target user, and priority stack: [`doc/strategy/positioning.md`](../strategy/positioning.md)
 - Supported capabilities and backend library table: [`doc/strategy/capabilities.md`](../strategy/capabilities.md)
-- Milestone details and completion signals: [`doc/strategy/roadmap/milestones/README.md`](../strategy/roadmap/milestones/README.md)
 - Execution plans: [`doc/execution/plans/`](../execution/plans/)
 - Observability surface: [`doc/execution/observability.md`](../execution/observability.md)
 - Telemetry semantics: [`doc/execution/telemetry.md`](../execution/telemetry.md)
