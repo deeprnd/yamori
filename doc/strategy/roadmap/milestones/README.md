@@ -24,9 +24,9 @@ carried-forward platform backlog item.
 | [M4](m4.md): Cross-Checks and Monte Carlo | Reverse DCF, sensitivity matrices, scenarios, Monte Carlo uncertainty, audit checks |
 | [M5](m5.md): Comparative Analysis and Reports | Peer benchmarking, valuation reports, historical replay, audit trails, CLI |
 | [M6](m6.md): Technical Analysis | TA-Lib indicators: moving averages, oscillators, volatility, volume, patterns |
-| [M7](m7.md): Options and Derivatives | QuantLib: options pricing, fixed income, volatility surfaces, yield curves |
-| [M8](m8.md): Portfolio Analytics | BLAS/LAPACK: factor models, risk decomposition, mean-variance optimization |
-| [M9](m9.md): Advanced Analytics | Cuba: multidimensional integration, FFTW: spectral analysis and cycle detection |
+| [M7](m7.md): Portfolio Analytics | BLAS/LAPACK: factor models, risk decomposition, mean-variance optimization |
+| [M8](m8.md): Advanced Analytics | Cuba: multidimensional integration, FFTW: spectral analysis and cycle detection |
+| [M9](m9.md): Options and Derivatives | QuantLib: options pricing, fixed income, volatility surfaces, yield curves |
 
 ## Cross-References
 
