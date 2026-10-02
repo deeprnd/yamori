@@ -14,8 +14,8 @@ metrics module for varanos.
 There are no varanos-specific Prometheus endpoints in the current Phase 0
 workspace.
 
-The only telemetry output is the final metric line printed by `zig build run --
-val --company <TICKER>` after the valuation completes.
+The only telemetry output is the final metric line printed after the valuation
+completes (full inputs supplied via `--inputs` flag).
 
 ## Retail Runtime Privacy Defaults
 
@@ -34,7 +34,7 @@ collection, background exporters, or hosted analytics dependencies.
 Current manual telemetry output is available through:
 
 ```bash
-zig build run -- val --company AAPL
+zig build run -- val --inputs inputs.json
 ```
 
 The command prints a final metric line and diagnostic line after the valuation
@@ -97,8 +97,7 @@ The diagnostics reported at the end of a valuation:
 | `currency_consistent` | boolean gauge | Whether forecast currency, discount rate, and output share one currency |
 | `base_year_normalized` | boolean gauge | Whether the base year was flagged as distorted and normalized |
 
-The CLI prints these diagnostics at the end of `zig build run -- val --company
-<TICKER>`.
+The CLI prints these diagnostics at the end of the valuation pipeline.
 
 ## Alerting Policy
 
