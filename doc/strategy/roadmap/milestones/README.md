@@ -18,11 +18,15 @@ carried-forward platform backlog item.
 
 | Milestone | Product result |
 | --- | --- |
-| [M1](m1.md): Grounded Valuation | FCFF-based DCF with WACC, three-stage growth, and per-share intrinsic value |
-| [M2](m2.md): Data-In-Data-Out | Financial statement ingestion, validation, and accounting adjustment pipeline |
-| [M3](m3.md): Cross-Checks And Uncertainty | Reverse DCF, relative multiples, sensitivity tables, and scenario analysis |
-| [M4](m4.md): Comparative Analysis | Multi-company peer benchmarking and valuation spreads |
-| [M5](m5.md): Reports And Replay | Exportable valuation reports, historical replay, and backtesting |
+| [M1](m1.md): Yamori Runtime Foundation | Dependency graph, backend router, shared memory, C ABI, deterministic execution |
+| [M2](m2.md): Damodaran Valuation Engine | FCFF-based DCF with WACC, three-stage growth, and per-share intrinsic value |
+| [M3](m3.md): Financial Statement Ingestion | XBRL mapping, R&D/lease/SBC adjustments, base-year normalization, TTM resolution |
+| [M4](m4.md): Cross-Checks and Monte Carlo | Reverse DCF, sensitivity matrices, scenarios, Monte Carlo uncertainty, audit checks |
+| [M5](m5.md): Comparative Analysis and Reports | Peer benchmarking, valuation reports, historical replay, audit trails, CLI |
+| [M6](m6.md): Technical Analysis | TA-Lib indicators: moving averages, oscillators, volatility, volume, patterns |
+| [M7](m7.md): Options and Derivatives | QuantLib: options pricing, fixed income, volatility surfaces, yield curves |
+| [M8](m8.md): Portfolio Analytics | BLAS/LAPACK: factor models, risk decomposition, mean-variance optimization |
+| [M9](m9.md): Advanced Analytics | Cuba: multidimensional integration, FFTW: spectral analysis and cycle detection |
 
 ## Cross-References
 
