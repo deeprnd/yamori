@@ -28,7 +28,7 @@ Application
    native engines
 ```
 
-Yamori is a **native quantitative-computing runtime** that unifies mature specialized libraries behind **one stable C ABI and one shared data model**. It does not implement algorithms itself. It owns the contract — the API, the ABI, the types, the memory model, the ownership semantics, the routing, the execution policy, the errors, the versioning, the testing, and the distribution. The backends own the algorithms.
+Yamori is a **native quantitative-computing runtime** that unifies mature specialized libraries behind **one stable C ABI and one shared data model**. It does **not** implement numerical or financial algorithms — there is no NumPy, no SciPy, no TA-Lib, no QuantLib inside Yamori. It owns the contract — the API, the ABI, the types, the memory model, the ownership semantics, the routing, the execution policy, the errors, the versioning, the testing, and the distribution. The backends own the algorithms.
 
 ### 1.1 The Core Advantage
 
@@ -48,13 +48,15 @@ ONE API
 
 ### 1.2 Product Principles
 
-**Own semantics. Delegate implementation.** Yamori owns the contract; backends own the algorithms. Exceptions require concrete justification — no suitable upstream, critical interoperability requirement, significant performance advantage, or backend-independent primitive needed.
+**Own semantics. Delegate implementation.** Yamori owns the contract — the API, the ABI, the types, the memory model, the ownership semantics, the routing, the execution policy, the errors, the versioning, the testing, and the distribution. Backends own the algorithms. Exceptions to this rule require concrete justification: no suitable upstream implementation exists, a critical interoperability requirement demands it, a significant performance advantage is provable, or a backend-independent primitive is needed. Yamori does not reimplement matrix multiplication, linear algebra, integration, technical indicators, or financial models — those are delegated to BLAS/LAPACK, Cuba, TA-Lib, QuantLib, and similar engines.
 
 **Composition before coverage.** The objective is not to support 10,000 functions. It is to make 100 important functions from ten different domains compose correctly over one representation. Market prices → returns → rolling volatility → model calibration → option valuation → scenario risk — all stages operating over Yamori objects without backend-specific conversion code.
 
 **Avoid backend leakage.** Yamori functions accept and return Yamori types, never backend types. `yamori.ta.macd()` returns a Yamori Series, not a GSL vector. Backend representations remain private.
 
 **Native first, Python excellent.** Python is an important frontend with ergonomic bindings, but the runtime does not embed or depend on Python. Python is the ergonomic interface, not the architectural owner.
+
+**Delegate algorithms. Own the contract.** Yamori does not reimplement numerical or financial algorithms. There is no NumPy inside Yamori, no SciPy, no TA-Lib, no QuantLib. Every algorithm — matrix multiplication, singular value decomposition, Monte Carlo integration, spectral analysis, Black-Scholes pricing, moving averages — is delegated to the appropriate backend. Yamori's job is to make those backends compose over one representation, one ABI, and one memory model. This is the principle that distinguishes Yamori from every other quantitative library.
 
 ---
 
@@ -466,7 +468,8 @@ Future alerting should use a bounded severity taxonomy:
 ### 8.1 What Yamori Is
 
 - A native quantitative-computing runtime
-- A composable layer over best-in-class libraries
+- A composability layer that unifies best-in-class libraries behind one stable ABI and one shared data model
+- The contract — the API, the ABI, the types, the memory model, the ownership semantics, the routing, the execution policy, the errors, the versioning, the testing, and the distribution
 - One integration → many quantitative capabilities
 - A stable front end to an evolving backend ecosystem
 - The portability, interoperability, and composition layer between applications and the fragmented native quantitative ecosystem
@@ -475,17 +478,26 @@ Future alerting should use a bounded severity taxonomy:
 
 | Not | Because |
 |-----|---------|
-| Another NumPy implementation | NumPy's C API requires Python; Yamori's C ABI is language-neutral |
-| Another SciPy | SciPy delegates to C/C++/Fortran — Yamori's contribution is runtime composition, not algorithm implementation |
-| Another pandas | pandas' index alignment semantics would conflict with predictable native execution |
-| Another Polars | Polars is the best DataFrame query engine; Yamori does not compete on DataFrame execution alone |
-| Another PyMC | PyMC is probabilistic programming (Bayesian inference); Yamori's Monte Carlo is lower-level and broader |
-| Another QuantLib | QuantLib is a comprehensive derivatives framework; it is one backend inside Yamori |
-| A wrapper collection | Wrappers are trivially copied; the moat is data representation, routing, and determinism |
+| Another NumPy implementation | NumPy's C API requires Python; Yamori's C ABI is language-neutral. Yamori delegates array operations to Arrow, not reimplements them. |
+| Another SciPy | SciPy delegates to C/C++/Fortran — Yamori's contribution is runtime composition, not algorithm implementation. Yamori does not reimplement optimization, integration, interpolation, linear algebra, or statistical functions. |
+| Another pandas | pandas' index alignment semantics would conflict with predictable native execution. Yamori delegates tabular compute to Arrow. |
+| Another Polars | Polars is the best DataFrame query engine; Yamori does not compete on DataFrame execution alone. DataFrames are one capability inside Yamori, not its reason for existence. |
+| Another PyMC | PyMC is probabilistic programming (Bayesian inference); Yamori's Monte Carlo is lower-level and broader, delegated to Cuba. |
+| Another QuantLib | QuantLib is a comprehensive derivatives framework; it is one backend inside Yamori. Yamori does not reimplement pricing engines. |
+| A wrapper collection | Wrappers are trivially copied; the moat is data representation, routing, shared-memory architecture, determinism, and error normalization. Yamori owns the contract; backends own the algorithms. |
 
-### 8.3 Non-Capabilities
+### 8.3 What Yamori Does Not Reimplement
 
-Yamori does not provide: algorithm implementations, interactive research notebooks (Python is a frontend, not the architecture), real-time market data feeds, trading execution or order management, machine learning or neural network inference, natural language processing or sentiment analysis, portfolio management or position tracking (beyond analytics on portfolio inputs), or any capability that leaks backend types through Yamori's public surface.
+Yamori deliberately does **not** reimplement the following categories of algorithms, which are delegated to backend libraries:
+
+- **Linear algebra** — matrix multiplication, SVD, Cholesky, eigenvalue decomposition, linear solvers → BLAS / LAPACK
+- **Monte Carlo & integration** — multidimensional integration, quasi-random sequences, stochastic simulation → Cuba
+- **Fast Fourier transforms & spectral analysis** — DFT, DCT, DST, cycle detection → FFTW
+- **Technical indicators** — moving averages, oscillators, volatility measures, volume indicators, candlestick patterns → TA-Lib
+- **Financial models** — option pricing (European, American, exotic), fixed income, volatility surfaces, yield curve construction → QuantLib
+- **Statistics** — medians, outlier filtering, interpolation, root finding, random number generation → GNU GSL
+
+The only algorithms Yamori implements are those that serve the composition layer itself: the dependency graph resolver, the backend router, the error normalization pipeline, the deterministic execution policy, the shared-memory buffer descriptor system, the provenance hash computation, and the data model type constructors (Buffer, Array, Series, Table). Everything computational is delegated.
 
 ---
 
