@@ -2,9 +2,9 @@
 
 ## Executive summary
 
-**Yamori is a coherent native quantitative-computing runtime over fragmented best-in-class libraries.**
+**Yamori is a native financial-computation runtime over fragmented best-in-class libraries.**
 
-It provides one API, one ABI, one memory model, one error model, and one distribution/runtime layer across numerical computing, statistics, time-series analytics, optimization, simulation, financial modeling, technical analysis, and risk.
+It provides one API, one ABI, one memory model, one error model, and one distribution/runtime layer across financial valuation, statistical analysis, technical indicators, portfolio analytics, derivatives pricing, and multidimensional integration.
 
 Yamori does not attempt to replace mature numerical algorithms with new implementations. Instead, it makes established libraries behave as parts of one system.
 
@@ -12,7 +12,7 @@ Its strategic ambition is simple:
 
 > **The quant library you build on, not around.**
 
-Applications should not need to individually integrate BLAS, LAPACK, Arrow, GSL, Cuba, TA-Lib, QuantLib, FFT libraries, optimizers, and other specialized engines.
+Applications should not need to individually integrate Apache Arrow, GNU GSL, TA-Lib, QuantLib, BLAS/LAPACK, Cuba, FFTW, and other specialized engines.
 
 They integrate Yamori once.
 
@@ -22,15 +22,12 @@ Application
     ▼
   Yamori
     │
-    ├── arrays
-    ├── statistics
-    ├── time series
-    ├── optimization
-    ├── integration
-    ├── simulation
+    ├── financial formula dependency graph
+    ├── valuation engine
     ├── technical analysis
-    ├── derivatives
-    └── risk
+    ├── portfolio analytics
+    ├── derivatives pricing
+    ├── advanced analytics
           │
           ▼
    best available
@@ -41,40 +38,37 @@ Yamori is implemented in Zig, but **Zig is an implementation choice rather than 
 
 The public interoperability boundary is a stable C ABI.
 
-Python, Zig, Rust, Go, C/C++, Java, C#, Julia, and other languages should ultimately be able to operate against the same runtime.
+Python, Zig, Rust, Go, C/C++, Java, C#, and other languages should ultimately be able to operate against the same runtime.
 
 ---
 
 # 1. The problem
 
-Quantitative computing already has excellent libraries.
+Financial computation already has excellent libraries.
 
 The problem is that they exist as separate islands.
 
 ```text
-BLAS / LAPACK
-    linear algebra
+Apache Arrow C++
+    columnar memory, CSV I/O, compute registry
 
-GSL
-    numerical algorithms / statistics
-
-Cuba
-    multidimensional integration
+GNU GSL
+    statistics, interpolation, root solving, RNG
 
 TA-Lib
-    technical analysis
+    technical indicators (moving averages, oscillators, volatility, patterns)
 
 QuantLib
-    pricing / instruments / financial models
+    options pricing, fixed income, volatility surfaces, yield curves
 
-Arrow
-    columnar representation / computation
+BLAS / LAPACK
+    vector/matrix operations, eigenvalue decomposition, SVD, solvers
+
+Cuba
+    multidimensional Monte Carlo and deterministic integration
 
 FFTW
-    Fourier transforms
-
-specialized libraries
-    optimization / RNG / solvers / etc.
+    fast Fourier transforms, spectral analysis
 ```
 
 Each comes with its own:
@@ -92,20 +86,20 @@ language bindings
 platform peculiarities
 ```
 
-A sophisticated application therefore ends up building its own integration layer.
+A sophisticated financial application therefore ends up building its own integration layer.
 
 ```text
 application
 │
-├── BLAS wrapper
 ├── Arrow wrapper
-├── QuantLib wrapper
-├── TA-Lib wrapper
 ├── GSL wrapper
+├── TA-Lib wrapper
+├── QuantLib wrapper
+├── BLAS/LAPACK wrapper
 ├── Cuba wrapper
+├── FFTW wrapper
 │
 ├── conversions
-├── temporary buffers
 ├── error translation
 ├── lifetime management
 ├── build scripts
@@ -138,8 +132,8 @@ It consists of four major pieces.
                  │
         ┌────────┼────────┐
         ▼        ▼        ▼
-      BLAS     Arrow    QuantLib
-       GSL     TA-Lib     Cuba
+     Arrow      GSL     TA-Lib
+   QuantLib   BLAS/LAPACK   Cuba
         ...     ...        ...
 ```
 
@@ -152,18 +146,16 @@ Array
 Series
 Table
 
-Distribution
-Optimizer
-Integrator
+ValuationInputs
+ValuationResult
 
-Curve
-Surface
-Model
-Instrument
+CovarianceMatrix
+PortfolioWeights
 
-Simulation
-Portfolio
-RiskResult
+OptionPrice
+YieldCurve
+
+IntegratorEstimate
 ```
 
 The API expresses operations such as:
@@ -172,25 +164,32 @@ The API expresses operations such as:
 array.mul()
 array.cumsum()
 
-stats.mean()
-stats.correlation()
-
-linalg.solve()
-
-timeseries.rolling_mean()
-timeseries.vwap()
+valuation.dcf()
+valuation.roic()
+valuation.wacc()
+valuation.fcff()
+valuation.sensitivity()
 
 ta.macd()
 ta.rsi()
+ta.bollinger_bands()
 
-optimize.brent()
+linalg.gemm()
+linalg.svd()
+linalg.cholesky()
 
-integrate.vegas()
+portfolio.covariance()
+portfolio.factor_model()
+portfolio.optimize()
 
-options.price()
-options.implied_vol()
+derivatives.option_price()
+derivatives.implied_vol()
+
+montecarlo.integrate()
+montecarlo.simulate()
 
 risk.bump_and_revalue()
+risk.decompose()
 ```
 
 Users should not need to know which underlying library performs an operation.
@@ -269,23 +268,25 @@ The difference is scope and architecture.
 
 ```text
 QuantLib
-    quantitative finance framework
+    options and derivatives framework
+    fixed income
+    volatility surfaces
+    yield curves
 
 Yamori
-    general quantitative runtime
+    financial-computation runtime
         │
-        ├── numerical computing
-        ├── arrays
-        ├── statistics
-        ├── time series
+        ├── financial formula dependency graph
+        ├── valuation engine
         ├── technical analysis
-        ├── simulation
-        ├── integration
-        ├── financial models
-        └── risk
+        ├── portfolio analytics
+        ├── derivatives pricing (QuantLib)
+        └── advanced analytics
 ```
 
-QuantLib can be one major backend inside Yamori.
+QuantLib is one backend inside Yamori, not its reason for existence.
+
+Yamori is the composability layer that lets QuantLib coexist with the valuation engine, technical indicators, and portfolio analytics over one shared memory representation.
 
 ---
 
