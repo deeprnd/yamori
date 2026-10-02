@@ -1,666 +1,555 @@
-# valuation_core — Architecture
+# Yamori — Architecture
 
-**Language-agnostic specification.** Describes what the valuation package does, what it receives,
-what it decides, and how. Notation is pseudo-schema, not any one language. Implementation language
-and tooling choices live in `plan.md`; the methodology it implements lives in `prompt.md`.
+**Language-agnostic specification.** Describes what Yamori is, what it receives, what it decides, how the pieces fit together, and how domains compose. Notation is pseudo-schema, not any one language. Implementation details and tooling choices live in execution plans; the methodology each domain implements is described in strategy and milestone documents.
 
 ---
 
-## 1. Purpose
+## 1. The Architecture Thesis
 
-A deterministic engine that performs Damodaran intrinsic valuation. It takes normalized company
-data plus Damodaran's published reference datasets and produces a valuation, a set of cross-checks,
-and a machine-readable audit.
+Financial computation already has excellent libraries. The problem is that they exist as separate islands, each with its own API, types, memory model, ownership rules, error handling, threading model, build system, versioning, language bindings, and platform peculiarities. A sophisticated financial application therefore ends up building its own integration layer — and many organizations independently recreate some version of that infrastructure.
 
-**Operating principle.** The engine calculates everything calculable. Anything it cannot calculate
-arrives as a sourced input. It never fills a gap with a guess, and it never asks a language model to
-supply a number that arithmetic could produce.
+Yamori exists to build that layer once.
 
-Three consequences:
+```text
+Application
+    │
+    ▼
+  Yamori
+    │
+    ├── financial formula dependency graph
+    ├── valuation engine
+    ├── technical analysis
+    ├── portfolio analytics
+    ├── derivatives pricing
+    └── advanced analytics
+          │
+          ▼
+   best available
+   native engines
+```
 
-- Geographic revenue, sector classification, peer sets and moat claims are **inputs**. The engine
-  cannot derive them from statements.
-- Every premium, rate, growth path and value **is** derived, from inputs and reference data only.
-- Where an input is missing, the engine reports the gap and what it costs. It does not substitute a
-  default that would look like an answer.
+Yamori is a **native quantitative-computing runtime** that unifies mature specialized libraries behind **one stable C ABI and one shared data model**. It does not implement algorithms itself. It owns the contract — the API, the ABI, the types, the memory model, the ownership semantics, the routing, the execution policy, the errors, the versioning, the testing, and the distribution. The backends own the algorithms.
+
+### 1.1 The Core Advantage
+
+Yamori's structural advantage is a combination of four things — any one by itself is insufficient; together they are the product:
+
+```text
+ONE API
++ ONE ABI
++ ONE MEMORY MODEL
++ BACKEND ROUTING
+```
+
+- **One API.** The user sees a coherent namespace (`yamori.array`, `yamori.linalg`, `yamori.timeseries`, `yamori.ta`, `yamori.optimize`, `yamori.integrate`, `yamori.options`, `yamori.curves`, `yamori.risk`) that describes problems, not implementations.
+- **One ABI.** A stable C interface exposes all runtime capabilities. Language bindings remain thin: Python, Zig, Rust, C++, Go, Java, C# — all connect to the same runtime.
+- **One memory model.** A common representation for numeric and columnar data (`Buffer` → `Array` → `Series` → `Table`) so that backend adaptation is primarily a matter of constructing views rather than copying datasets.
+- **Backend routing.** Every Yamori function is a semantic operation that routes through a capability registry to the appropriate backend engine. The invocation flow is: semantic validation → backend resolution → zero-copy view/adaptation → backend execution → error normalization → Yamori result.
+
+### 1.2 Product Principles
+
+**Own semantics. Delegate implementation.** Yamori owns the contract; backends own the algorithms. Exceptions require concrete justification — no suitable upstream, critical interoperability requirement, significant performance advantage, or backend-independent primitive needed.
+
+**Composition before coverage.** The objective is not to support 10,000 functions. It is to make 100 important functions from ten different domains compose correctly over one representation. Market prices → returns → rolling volatility → model calibration → option valuation → scenario risk — all stages operating over Yamori objects without backend-specific conversion code.
+
+**Avoid backend leakage.** Yamori functions accept and return Yamori types, never backend types. `yamori.ta.macd()` returns a Yamori Series, not a GSL vector. Backend representations remain private.
+
+**Native first, Python excellent.** Python is an important frontend with ergonomic bindings, but the runtime does not embed or depend on Python. Python is the ergonomic interface, not the architectural owner.
 
 ---
 
-## 2. Pipeline
+## 2. Runtime Foundation
 
-Seven stages. Each is a pure transformation of the previous one; nothing reaches back.
+M1 establishes Yamori's durable runtime capabilities. Every domain milestone depends on these.
 
-```
-  ingest ──► resolve ──► adjust ──► derive ──► project ──► analyse ──► audit
-```
+### 2.1 Financial Formula Dependency Graph
 
-| Stage | Responsibility | May perform I/O |
-|---|---|---|
-| **ingest** | parse filings and reference datasets into typed records | yes |
-| **resolve** | pick one value per field from competing sources; build periods | no |
-| **adjust** | capitalize R&D and leases; normalize a distorted base year | no |
-| **derive** | historical metrics, dilution, cost of capital, growth paths | no |
-| **project** | cash flow projection, terminal value, equity bridge | no |
-| **analyse** | sensitivity, scenarios, reverse DCF, cross-checks, simulation | no |
-| **audit** | evaluate every methodology rule; assign severities | no |
+Financial metrics are defined as named dependency graphs over source metrics. Derived metrics resolve in deterministic topological order without performing numerical work themselves.
 
-Only **ingest** touches the outside world. Stages 2–7 form one pure function:
-
-```
-run_valuation(inputs: ValuationInputs, policy: ValuationPolicy) → ValuationResult | Error
+```text
+NamedFormulaNode
+  name        : String                 # unique identifier within the graph
+  dependencies: List<String>           # names of required source metrics
+  backend     : BackendHandle          # resolves to a specific engine
+  params      : Map<String, DataPoint> # parameter values at graph-evaluation time
 ```
 
-This function must be cheap and side-effect free, because the **analyse** stage calls it repeatedly:
-roughly fifteen times for a sensitivity grid, four for scenarios, a hundred for a reverse-DCF solve,
-and once per Monte Carlo iteration. Four analyses, one implementation. An engine whose core cannot
-be re-entered has to implement each of them separately, and they will drift.
+The graph enables sensitivity analysis, Monte Carlo simulation, and reverse DCF because `runValuation()` traverses the graph rather than calling a monolithic function. This is Yamori's strongest differentiator: the graph, not any single formula, is the reusable asset. Each domain registers its operations as named nodes. The same graph serves valuation formulas, technical indicators, portfolio operations, integration routines, and pricing functions.
+
+### 2.2 Unified Backend Router
+
+Every direct library invocation flows through one stable semantic dispatch layer. The router registers backend functions behind a capability registry that maps each Yamori operation to its backend implementation.
+
+```text
+BackendRegistry
+  registrations : Map<OperationId, BackendBinding>
+
+BackendBinding
+  capability    : OperationId            # e.g. "linalg.gemm", "ta.macd"
+  engine        : BackendHandle          # BLAS, TA-Lib, QuantLib, etc.
+  params        : ParamSchema            # required parameters for this operation
+  output_type   : YamoriType             # result type descriptor
+```
+
+The router normalizes backend failures into Yamori statuses, prevents C++/native types from leaking through Yamori's public surface, and enables backend plurality — eventually multiple engines may implement the same semantic operation, selected by platform, CPU capabilities, datatype, input size, or configured preference.
+
+### 2.3 Shared-Memory Representation
+
+The same financial arrays and tables are mapped by multiple processes with Arrow-compatible layout. Offset-based buffer descriptors (`workspace ID` + `buffer offset` + `byte length`) rather than process-local pointers enable zero-copy process attach for cross-process data sharing.
+
+#### 2.3.1 Data Model
+
+```text
+Buffer
+  workspace_id  : WorkspaceId            # identifies a shared-memory region
+  offset        : Int64                  # byte offset within workspace
+  length        : Int64                  # byte length
+  datatype      : YamoriDataType         # float64, int32, bool, etc.
+
+Array
+  buffer        : Buffer                 # underlying storage
+  shape         : List<Int64>            # dimensions
+  strides       : List<Int64>            # byte offsets per dimension
+  alignment     : Int64                  # memory alignment requirement
+  ownership     : Enum{ Owned, Borrowed, Foreign }
+  lifetime      : LifetimeDescriptor     # who owns, who may access
+
+Series
+  array         : Array                  # inherits all array fields
+  validity      : Optional<Bitmap>       # null/missing indicator per element
+  logical_type  : YamoriDataType         # may differ from physical type
+  metadata      : Map<String, String>    # column-level annotations
+
+Table
+  schema        : Schema                 # column names, types, metadata
+  columns       : List<Series>           # columns share workspace when possible
+  validity      : Optional<Bitmap>       # row-level validity
+```
+
+For columnar data, Arrow's C Data Interface provides the interoperability model where practical — a language-independent columnar representation and a C Data Interface specifically designed for cross-runtime, zero-copy exchange over a shared C ABI.
+
+#### 2.3.2 Shared Memory
+
+```text
+Process A
+    │
+    ▼
+┌──────────────────────────────┐
+│ shared-memory workspace      │
+│                              │
+│ schema                       │
+│ column descriptors           │
+│ validity bitmaps             │
+│ value buffers                │
+│ metadata                     │
+└──────────────────────────────┘
+    ▲
+    │
+Process B
+```
+
+Each process resolves offsets against its local mapping. This creates a common data plane suitable for market data, analytics, pricing, risk, plugins, terminals, and worker processes without serialization for trusted local pipelines.
+
+### 2.4 C ABI
+
+A language-neutral interface that exposes all runtime capabilities through C-callable functions. Uses Arrow C Data Interface structures for array/table interchange and provides opaque handles for backend state.
+
+```c
+// Data interchange (Arrow C Data Interface compatible)
+ym_array_from_arrow(struct ArrowArray*, struct ArrowSchema*);
+ym_array_to_arrow(ym_handle_t, struct ArrowArray*, struct ArrowSchema*);
+
+// Core operations
+ym_array_mul(ym_handle_t input, float scalar, ym_handle_t* result);
+ym_array_cumsum(ym_handle_t input, ym_handle_t* result);
+
+// Domain operations
+ym_valuation_run(ym_handle_t inputs, ym_handle_t policy, ym_handle_t* result);
+ym_ta_macd(ym_handle_t close, int fast_period, int slow_period, int signal_period, ym_handle_t* result);
+ym_option_price(ym_handle_t params, ym_handle_t* result);
+
+// Workspace and memory
+ym_workspace_create(int size, ym_handle_t* workspace);
+ym_workspace_attach(ym_handle_t workspace, ym_handle_t* attached);
+
+// Status and errors
+ym_status_code ym_last_status();
+const char* ym_status_message(ym_status_code);
+
+// Handle management
+typedef void* ym_handle_t;
+ym_handle ym_handle_create(void);
+void ym_handle_destroy(ym_handle_t);
+```
+
+ABI compatibility tests detect accidental binary-interface breakage across releases.
+
+### 2.5 Deterministic Execution Policy
+
+Pins algorithms, pins RNG with explicit seed, enforces deterministic threading policy, specifies reduction order, and disables fast-math. Produces bit-identical results across Linux x86, Linux ARM, macOS ARM, and Windows x86. Every downstream milestone depends on this.
+
+**The rules:**
+
+1. **Iterated multiplication for discount factors.** Never use a power function for `(1 + r)^t`. Power functions are not correctly rounded and vary across math library versions and platforms; iterated multiplication is bit-identical everywhere. This is the single rule that removes the most likely source of cross-machine divergence.
+
+2. **No fast-math or fused-multiply-add contraction** where the unfused form is the specified arithmetic.
+
+3. **Fixed summation order.** Present values accumulate from the first year forward. No parallel reduction in any path reaching a reported number.
+
+4. **Fixed iteration counts in solvers**, not tolerance-based early exits. Tolerance-based early exits are not portable.
+
+5. **No unordered-container iteration** in numeric paths.
+
+6. **Counter-based RNG.** Draw *i* for variable *j* is a pure function of seed, *i*, and *j*. With a sequential generator, parallelism and reproducibility are mutually exclusive.
+
+7. **Single-threaded execution policy** by default. Parallel paths that reach reported numbers must produce the same reduction order on any thread count.
+
+**The hash identity:** Every result carries a `provenance_hash = BLAKE3(canonical(inputs) ‖ policy ‖ semver ‖ dataset manifest)`. Two runs agreeing on the hash must agree on every output number. Golden tests assert on the hash rather than on individual figures.
 
 ---
 
-## 3. Inputs
+## 3. Backend Library Routing
 
-Three things enter: **company inputs** (what we learned about this company), **reference data**
-(Damodaran's datasets), and **policy** (how to decide). Policy and reference data are stable across
-companies; only the first varies per valuation.
+| Library | Domain | Capabilities | Milestone |
+|---------|--------|-------------|-----------|
+| **Apache Arrow C++** | All | Canonical memory representation, CSV I/O, compute registry, cross-language interchange, columnar operations | M1 |
+| **GNU GSL** | Valuation | Statistics (medians, outlier filtering), interpolation (transition paths), roots (reverse DCF bisection), RNG (Monte Carlo) | M2 |
+| **TA-Lib** | Technical Analysis | Moving averages (SMA, EMA, WMA, DEMA, TEMA, KAMA, MAMA, T3), oscillators (RSI, Stochastic, CCI, ROC, MOM), volatility (Bollinger Bands, ATR, ADX, SAR), volume (OBV, AD, ADOSC), candlestick patterns | M6 |
+| **QuantLib** | Options & Derivatives | Options pricing (European, American, exotic), fixed income (bonds, swaps, cap/floor), numerical methods (Monte Carlo, finite-difference, trees), volatility surfaces, yield curve construction | M9 |
+| **BLAS + LAPACK** | Portfolio Analytics | Vector/matrix operations (GEMM, axpy, dot), eigenvalue decomposition (DSYEVD), SVD (DBDSDC), Cholesky (DPOTRF), QR (DGEQRF), linear solvers | M7 |
+| **Cuba** | Advanced Analytics | Multidimensional Monte Carlo (Vegas, Suave), deterministic adaptive integration (Divonne, Cuhre) | M8 |
+| **FFTW** | Advanced Analytics | Fast Fourier transforms (real/complex DFT, DCT, DST), multi-dimensional transforms, plan-based execution | M8 |
 
-### 3.1 Provenance wrapper
+A new library enters Yamori only when a domain requires capabilities the current backends do not provide — not because the library happens to be useful.
 
-Every externally-sourced scalar is wrapped. Bare numbers do not enter the engine.
-
-```
-DataPoint<T>
-  value       : T
-  source      : SourceId          # document, dataset, or provider
-  source_type : Enum{ Filing, ProvidedStatement, CalculatedMetric,
-                      EarningsReport, AnalystConsensus, ExternalDatabase }
-  as_of       : Date
-  period      : Optional<Period>
-  currency    : Optional<Currency>
-  confidence  : Enum{ High, Medium, Low }
-```
-
-This exists so the transparency table at the end of a valuation is generated rather than written,
-and so source priority (§5.1) is mechanical rather than editorial.
-
-### 3.2 Company inputs
+### 3.1 Invocation Flow
 
 ```
-ValuationInputs
-  identity
-    ticker          : String                 # display key only, never a primary key
-    venue           : MicCode                # ISO 10383, e.g. XNAS
-    legal_entity    : Optional<Lei>          # ISO 17442
-    instrument      : Optional<Figi|Isin>
-    domicile        : CountryCode            # ISO 3166
-    reporting_ccy   : Currency               # ISO 4217
-
-  sector            : DamodaranSector        # SOURCED INPUT — see §5.2
-
-  statements        : List<FinancialPeriod>  # ≥5 annual periods for history
-  market            : MarketData
-  equity_claims     : EquityClaims
-  geo_exposure      : GeoExposure            # SOURCED INPUT — see §5.8
-  consensus         : Optional<List<ConsensusPeriod>>
-  peers             : Optional<List<PeerCompany>>   # SOURCED INPUT
-  qualitative       : Optional<List<QualitativeClaim>>
-  fx                : Optional<FxSnapshot>
+function call
+     │
+     ▼
+semantic validation          // types, ranges, dependencies
+     │
+     ▼
+backend resolution           // registry lookup, plurality selection
+     │
+     ▼
+zero-copy view/adaptation    // construct backend view over Yamori buffer
+     │
+     ▼
+backend execution            // delegate to the engine
+     │
+     ▼
+error normalization          // backend status → Yamori status
+     │
+     ▼
+Yamori result                // result in Yamori types
 ```
 
-```
-FinancialPeriod
-  period            : Period                 # { kind: FY|Q|TTM, end: Date, fiscal_year: Int }
-  currency          : Currency
-  elements          : Map<XbrlElement, DataPoint<Money>>
-```
+### 3.2 Backend Plurality
 
-Statement line items are keyed by **XBRL element name** (`Revenues`, `OperatingIncomeLoss`,
-`ShareBasedCompensation`, `Goodwill`, …) rather than invented field names. Filings are already
-tagged this way, so competing sources become competing values for the *same* element, which is what
-makes source resolution well-defined.
+Eventually multiple engines may implement the same semantic operation:
 
-```
-MarketData
-  price             : DataPoint<Money>
-  price_date        : Date
-  shares_outstanding: DataPoint<Decimal>
-  market_cap        : DataPoint<Money>
-  beta_regression   : Optional<RegressionBeta>   # { beta, r_squared, n_obs, window, frequency }
-
-EquityClaims
-  options    : List<{ count, strike: Money, remaining_life: Years }>
-  rsus       : List<{ count, vested: Bool }>
-  converts   : List<{ principal: Money, conversion_price: Money }>
-  implied_vol: Optional<Rate>                    # required for fair-value route
-
-GeoExposure
-  weights : Map<GeoRegion, Weight>               # must sum to 1
-  basis   : Enum{ Revenue, Assets, Production }
-  source  : SourceId
-  as_of   : Date
-
-GeoRegion = Country(CountryCode)
-          | Block(GeoBlock)
-          | Composite(Set<GeoBlock>)             # one disclosed number, several blocks
-
-GeoBlock = NorthAmerica | LatinAmerica | Europe | MiddleEastAfrica
-         | GreaterChina | Japan | India | AsiaPacificOther | Unallocated
-
-QualitativeClaim                                  # from transcripts; never a financial history source
-  kind    : Enum{ Fact, Guidance, Opinion }
-  metric  : String
-  period  : Period
-  low     : Optional<Decimal>
-  high    : Optional<Decimal>
-  quote   : String
-  source  : SourceId
+```text
+matrix multiply
+│
+├── OpenBLAS
+├── BLIS
+├── vendor BLAS
+└── accelerator backend
 ```
 
-Qualitative claims are compared against the engine's own computed figures. They never replace them.
-
-### 3.3 Reference data
-
-Damodaran's published tables, normalized at build time into typed form with a manifest recording
-each file's checksum, vintage date and source. Raw spreadsheet exports never reach the engine —
-they carry preamble rows, footer rows, duplicate column names, blank spacer columns and mixed units,
-all of which are reproducibility hazards if parsed at valuation time.
-
-| Reference table | Supplies |
-|---|---|
-| implied ERP history | risk-free rate and mature-market equity risk premium, as a matched pair |
-| country ratings and spreads | sovereign default spreads by country |
-| rating → spread map | default spread by credit rating |
-| unlevered betas by sector | bottom-up beta inputs |
-| country tax rates | marginal statutory rates, including global-minimum adjustments |
-| sector fundamental growth | benchmark ROIC, reinvestment rate, implied growth |
-| sector reinvestment and working capital | reinvestment and ΔWC benchmarks |
-| sector margins | margin benchmarks, including pre-SBC and lease-adjusted variants |
-| sector multiples | EV/EBITDA, EV/EBIT, P/E, P/S for cross-checks and exit multiples |
-| sector cost of capital | WACC benchmark for sanity checking only, never an input |
-
-Two cautions that the type system should enforce rather than document:
-
-- The country table contains **default spreads, not country risk premia**. Conversion requires a
-  relative-equity-volatility scalar that is in none of the tables. Give default spreads and country
-  risk premia distinct types so the conversion cannot be skipped by accident.
-- The rating table and the country table use **different units** (basis points versus percent) and
-  are used together. Construct rates through explicit `from_basis_points` / `from_percent`
-  constructors so a unit error cannot be written.
-
-### 3.4 Policy
-
-Every discretionary choice in one place, so that two runs differing only in policy are comparable
-and a run's behaviour is fully described by its policy record.
-
-```
-ValuationPolicy
-  # cost of capital
-  relative_equity_volatility : Rate            # required, no default (see §3.3)
-  beta_method                : Enum{ PreferBottomUp, ForceRegression }
-  base_market                : CountryCode     # whose ERP is the mature-market baseline
-
-  # history
-  history_years              : Int = 5
-  roic_window                : Int = 3
-  roic_statistic             : Enum{ Median, Mean }
-
-  # growth
-  high_growth_cap            : Rate = 0.25
-  stage1_years               : Int = 5
-  transition_years           : Int = 5
-  moat_spread                : Rate = 0        # sourced input when non-zero
-  stable_growth_rule         : Enum{ MinOfRiskFreeAndMacro, Explicit }
-
-  # adjustments
-  capitalize_rnd             : Bool = true
-  rnd_amortization_years     : Map<DamodaranSector, Int>
-  capitalize_leases          : Bool = true
-  include_goodwill_in_ic     : Bool = true
-
-  # mechanics
-  discount_timing            : Enum{ EndOfPeriod, MidPeriod } = EndOfPeriod
-  fx_method                  : Enum{ TranslateAtEnd, TranslateFlows } = TranslateAtEnd
-  sbc_treatment              : Enum{ FairValueOptions, TreasuryMethodFallback }
-  tax_convergence            : Enum{ EffectiveToMarginal, HoldEffective }
-
-  # solver and simulation
-  solver_iterations          : Int = 100
-  monte_carlo_iterations     : Int
-  monte_carlo_seed           : Int
-
-  # datasets
-  dataset_snapshot           : SnapshotId
-```
+Selection depends on platform, CPU capabilities, datatype, input size, requested determinism, available accelerator, or configured backend. The API remains unchanged. Yamori becomes a **stable front end to an evolving backend ecosystem**.
 
 ---
 
-## 4. Outputs
+## 4. Multi-Domain Architecture
 
+All domains share the same runtime. Each installs as a set of named formula nodes on the dependency graph, registered through the backend router.
+
+### 4.1 M1 — Runtime Foundation
+
+**Purpose.** The dependency graph, backend router, shared-memory representation, C ABI, and deterministic execution policy — the infrastructure that makes Yamori a composable runtime rather than a single-domain calculator.
+
+**Key types:** `NamedFormulaNode`, `BackendRegistry`, `Buffer`, `Array`, `Series`, `Table`, `Workspace`, `ValuationPolicy`.
+
+**Key functions:** `graph.resolve()`, `router.dispatch()`, `array.mul()`, `workspace_create()`, `run_valuation()`.
+
+**Completion signal.** The dependency graph resolves derived metrics in deterministic topological order. The backend router dispatches every operation through the capability registry. Shared-memory buffers are zero-copy accessible across processes. The C ABI exposes all runtime capabilities with ABI compatibility tests passing. The deterministic execution policy produces bit-identical results across four platforms for the same inputs.
+
+### 4.2 M2 — Damodaran Valuation Engine
+
+**Purpose.** A working Damodaran-style FCFF discounted cash flow engine that accepts financial statements and policy inputs and produces a per-share intrinsic value estimate.
+
+**Key types:** `ValuationInputs`, `ValuationPolicy`, `ValuationResult`, `Money<C>`, `Rate`, `Period`, `DataPoint<T>`, `FinancialPeriod`, `MarketData`, `EquityClaims`, `GeoExposure`, `CostOfCapital`, `GrowthPath`, `TerminalValue`, `EquityBridge`, `ImpliedGrowth`, `AuditResult`.
+
+**Key functions:** `runValuation(inputs, policy) → result | Error` — the pure, re-enterable core function.
+
+**Pipeline stages:**
+```text
+ingest ──► resolve ──► adjust ──► derive ──► project ──► analyse ──► audit
 ```
-ValuationResult
-  provenance_hash   : Hash               # see §6
-  forecast_currency : Currency
-  output_currency   : Currency
 
-  history           : List<HistoricalYear>
-  cost_of_capital   : CostOfCapital      # components, each with its source
-  growth_path       : List<YearAssumptions>
-  projection        : List<ProjectedYear>
-  terminal          : TerminalValue       # both methods, and their divergence
-  bridge            : EquityBridge        # every line item
-  per_share         : Money
-  reverse_dcf       : ImpliedGrowth
-  sensitivity       : Matrix<Rate, Rate, Money>
-  scenarios         : List<ScenarioOutcome>
-  cross_checks      : List<CrossCheck>
-  simulation        : Optional<Distribution>
-  sources           : List<SourceRow>    # generated from DataPoint provenance
+**Decision rules:** Source priority (filing > provided statement > calculated metric > earnings report > analyst consensus > external database). Sector selection by company domicile, not listing venue. Base-year distortion detection (negative operating income or margin deviation > 30% from median). R&D and lease capitalization as all-or-nothing adjustments. Beta from bottom-up relever (or regression fallback). Country risk netted against base market. Growth from sustainable ROIC × reinvestment, transition by linear interpolation, stable by `min(risk-free, inflation + real growth)`. Tax rate converges from effective to statutory over projection years. Discount factors by iterated multiplication. Terminal value by Gordon growth (primary) and exit multiple (cross-check). Reverse DCF by fixed-count bisection (100 iterations). Monte Carlo via counter-based RNG with fixed seed.
 
-AuditResult
-  checks  : List<{ id, severity, status, actual, limit, message }>
-  verdict : Enum{ Clean, Warnings, Blocked }
-```
+**Audit severities:** Error (blocks rendering), Warn (strain indicators), Info (conventions). Errors cover: stable growth within risk-free rate, WACC − g ≥ 100bp, currency consistency, CRP derived from default spreads (not raw), terminal value share < 75%, adjustments propagated completely, country risk netted, equity compensation handled exactly once.
 
-Rendering layers must not recompute anything. Rows arrive complete, including intermediate columns
-such as per-year reinvestment and discount factors, so that a report is a formatting pass.
+### 4.3 M3 — Financial Statement Ingestion
 
-`Blocked` means at least one check of severity `Error` failed. A blocked result may be inspected but
-must not be rendered as an investment conclusion.
+**Purpose.** Data integrity layer between raw financial filings and the cleaned inputs required by M2's engine.
+
+**Key types:** `XbrlElement`, `SourceId`, `DatasetManifest`, `NormalizedPeriod`.
+
+**Key epics:** XBRL mapping (US-GAAP and IFRS to canonical names). R&D capitalization (amortizing asset, sector-dependent periods). Lease capitalization (discount-rate present value). Stock-based compensation deduction (Black-Scholes option valuation, treasury-method fallback). Base-year normalization with distortion detection. TTM calculation and source-priority resolution.
+
+**Invariant.** Every adjusted metric carries provenance tracing to the source filing and specific adjustment applied.
+
+### 4.4 M4 — Cross-Checks, Sensitivity, and Monte Carlo
+
+**Purpose.** Transforms a single deterministic valuation into a bounded, auditable range with probabilistic confidence intervals.
+
+**Key epics:** Reverse DCF (fixed-count bisection solver solving `DCF(g_high) − market_price = 0`). Relative-multiple cross-checks (implied P/E, P/S, EV/EBITDA). Sensitivity matrices (WACC/growth grid over the dependency graph). Scenario analysis (bull/base/bear/stress input sets with base-case preservation). Audit checks (severity-flagged assertions). Monte Carlo: random sampling (seeded distributions with hard constraints), runner (thousands of sampled inputs through `runValuation()`), summary (percentiles P5/P25/P50/P75/P95, valuation range), demo (end-to-end CSV → DCF → MC distribution).
+
+**Completion signal.** A single valuation run produces: deterministic per-share value, reverse DCF implied growth, sensitivity matrix, scenario distributions, Monte Carlo percentiles, and audit assertions — all reproducible from the same inputs and dataset manifest.
+
+### 4.5 M5 — Comparative Analysis, Reports, and Historical Replay
+
+**Purpose.** Extends single-company valuation to multi-company comparative analysis with exportable reports, historical replay, and deterministic audit trails.
+
+**Key epics:** Peer-set management (sourced inputs, canonical identifiers, persistent sector assignments). Batch valuation (shared policy objects, zero-copy across runs). Valuation report generation (machine-readable JSON with structured narrative). Historical replay and backtesting (same pipeline, same historical data → same results). Deterministic audit trail and provenance hash (`BLAKE3(canonical(inputs) ‖ policy ‖ semver ‖ dataset manifest)`). Dataset versioning and manifest management (SHA-256 checksums, vintage tracking). CLI and export interfaces. Relative valuation metrics (discount/premium to peer median, percentile ranks). Sector-relative positioning (WACC/ROIC/growth vs sector medians).
+
+**Key invariant.** Running any batch twice with the same inputs produces bit-identical results for every company.
+
+### 4.6 M6 — Technical Analysis
+
+**Purpose.** First post-M4 domain proving the runtime generalizes beyond valuation. Integrates TA-Lib and builds the indicator formula framework.
+
+**Library:** TA-Lib.
+
+**Key epics:** TA-Lib integration and indicator registry. Moving averages (SMA, EMA, WMA, DEMA, TEMA, KAMA, MAMA, T3). Oscillators (RSI, Stochastic, CCI, ROC, MOM). Volatility and trend (Bollinger Bands, ATR, ADX, SAR). Volume indicators and pattern recognition (OBV, AD, ADOSC, candlestick patterns). Cross-domain demo (price series → MAs → oscillators → volatility → volume through the same graph).
+
+**Key insight.** Technical indicators on the same data as a valuation produce no cross-domain interference — they share the graph but use independent node sets.
+
+### 4.7 M7 — Portfolio Analytics
+
+**Purpose.** Third post-M4 domain. Matrix-heavy computation where shared memory becomes operationally essential. Integrates BLAS and LAPACK.
+
+**Libraries:** BLAS, LAPACK.
+
+**Key epics:** BLAS/LAPACK integration and linear algebra registry. Covariance estimation (sample, rolling, EWMA, Ledoit-Wolf shrinkage). Factor models (PCA via SVD, factor regression via OLS/normal equations). Risk decomposition (factor/asset/marginal contributions, component VaR, risk parity). Portfolio optimization (Markowitz, min variance, max Sharpe, risk parity, Black-Litterman, constrained). Portfolio simulation and scenario analysis (historical + MC scenarios with BLAS-accelerated operations). Historical scenario analysis and backtesting.
+
+**Key insight.** This is where Yamori's shared-memory infrastructure (M1 Epic V1.3) becomes operationally essential — covariance matrices for large portfolios (100+ assets) must be shared across optimization, risk decomposition, and simulation processes without copying.
+
+### 4.8 M8 — Advanced Analytics
+
+**Purpose.** Fourth post-M4 domain. High-dimensional integration and spectral analysis — the last major class of numerical methods that financial computation requires. Integrates Cuba and FFTW.
+
+**Libraries:** Cuba, FFTW.
+
+**Key epics:** Cuba/FFTW integration and combined registry. Monte Carlo integration (Vegas/Suave for high-dimensional probability spaces). Deterministic integration (Divonne/Cuhre for smooth integrands requiring high precision). FFT spectral analysis (real/complex DFT, DCT, DST, cycle detection). Spectral filtering and cycle decomposition (bandpass filtering, noise removal, dominant period identification). Cross-domain demo (all five domains operating independently on the same graph).
+
+**Key insight.** Five domains — valuation, technical analysis, derivatives, portfolio analytics, advanced analytics — four library families (TA-Lib, QuantLib, BLAS/LAPACK, Cuba+FFTW), one dependency graph, one backend router, one deterministic execution policy.
+
+### 4.9 M9 — Options and Derivatives
+
+**Purpose.** Second post-M4 domain. Handles closed-form and numerically-intensive pricing. Integrates QuantLib.
+
+**Library:** QuantLib.
+
+**Key epics:** QuantLib integration and pricing registry. Equity options (European via Black-Scholes-Merton, American via binomial trees). Exotic options (barriers, Asians, lookbacks, compounds via MC and finite-difference). Fixed income instruments (zero-coupon, coupon-bearing bonds, swaps, caps/floors, swaptions). Volatility surface and yield curve management (bootstrapped, interpolated, shared-memory objects). Cross-domain demo (option pricing → exotic → fixed income → surfaces → curves through the same graph).
+
+**Key insight.** Fixed income yield curve infrastructure provides yield curve data useful for Damodaran cost-of-debt and risk-free rate lookups (M2), demonstrating cross-domain utility.
 
 ---
 
-## 5. Decision rules
+## 5. Cross-Domain Composition
 
-This section is the substance of the engine. Every rule below is deterministic: same inputs, same
-choice, with explicit tie-breaks. Where the methodology permitted discretion, that discretion has
-been converted into either a policy field or a fixed algorithm.
+All domains share the same runtime. A single Yamori representation can flow through multiple domains:
 
-### 5.1 Which value to use when sources disagree
-
-Ordered priority. First available wins:
-
-1. Company filing
-2. Provided financial statement
-3. Provided calculated metric
-4. Earnings report
-5. Analyst consensus
-6. External database
-
-The resolver returns the selected value, the rejected alternatives, and the reason — not just the
-winner. Two additional rules:
-
-- **Conflict.** If a lower-priority source disagrees with the winner by more than a tolerance, the
-  disagreement is recorded and surfaced. It does not change the selection.
-- **Staleness.** A candidate older than a threshold relative to the valuation date is demoted below
-  fresher candidates of lower nominal priority.
-
-### 5.2 Which reference tables to read
-
-Sector-level tables exist in US and global variants. Selection is by **company domicile**, not by
-listing venue. The sector key is the Damodaran classification, which maps to no public standard and
-therefore arrives as a sourced input, persisted per company. It is never re-derived, because
-re-deriving it would silently change the bottom-up beta between runs of the same company.
-
-### 5.3 Which period is the base year
-
-1. Prefer a trailing-twelve-month period assembled from the four most recent quarters.
-2. If quarterly data is incomplete, use the most recent complete fiscal year.
-3. A period is complete only if every element required by the projection is present.
-4. History requires `history_years` consecutive annual periods; fewer reduces confidence and is
-   reported.
-
-### 5.4 Whether the base year is usable as-is
-
-The base year drives every projected cash flow, so it is tested before use:
-
-1. Compute base operating margin and base return on invested capital.
-2. Compare each against its median over the history window.
-3. The base year is **distorted** if operating income is negative, or margin deviates from the
-   median by more than 30% in relative terms.
-4. If distorted, normalize: base operating income = base revenue × median margin. Disclose it.
-5. If base operating income is negative **and** the median margin is also negative, a cash-flow
-   valuation is not reliable. Report that and stop rather than producing a number.
-
-### 5.5 Which accounting adjustments to apply
-
-Reported accounting treats two large investments as expenses. Both are corrected by default.
-
-| Adjustment | Effect on operating income | Effect on invested capital | Effect on debt |
-|---|---|---|---|
-| Capitalize R&D | `+ current R&D − amortization of research asset` | `+ unamortized research asset` | — |
-| Capitalize leases | `+ implied lease interest` | `+ right-of-use asset` | `+ lease liability` |
-
-**All-or-nothing rule.** Each adjustment propagates to every column in its row, or it is not applied
-at all. Adjusting operating income without adjusting invested capital inflates return on capital,
-which inflates fundamental growth, which inflates the valuation — a single omission compounding
-three times. The audit enforces this rather than trusting it.
-
-Goodwill is included in invested capital. Return on capital is reported both with and without it;
-the with-goodwill figure drives the valuation.
-
-### 5.6 Which currency to forecast in
-
-| Policy | Forecast currency | What is translated | FX observations needed |
-|---|---|---|---|
-| `TranslateAtEnd` (default) | reporting currency | final per-share value only, at spot | one |
-| `TranslateFlows` | output currency | each projected flow, at inflation-parity forwards | a forward curve |
-
-The risk-free rate, cost of debt, terminal growth and discount rate all match the **forecast**
-currency, not the output currency. The most common currency error in practice is adopting the
-reader's preferred currency for the discount rate while leaving cash flows in the reporting
-currency; the two policies above are each internally consistent and must never be combined.
-
-### 5.7 Which beta to use
-
-| Condition | Method |
-|---|---|
-| Sector unlevered beta available (default) | relever it at this company's own market debt-to-equity and effective tax rate |
-| Unavailable, or policy forces it | regression beta, reported with R², observation count and window |
-
-The chosen method, and why, is recorded. Policy decides; the engine does not pick opportunistically
-based on which answer it prefers.
-
-### 5.8 How country risk is computed
-
-```
-country_premium = max(0, spread(rating(country)) − spread(rating(base_market)))
-                  × relative_equity_volatility
-block_premium   = median of member-country premia
-weighted        = Σ (weight × premium)
+```text
+CSV / Arrow data
+       │
+       ▼
+financial series
+       │
+       ├── M2/M3: ratios, valuation, FCFF, adjustments
+       ├── M4: reverse DCF, Monte Carlo, sensitivity
+       ├── M5: peer sets, reports, historical replay
+       ├── M6: technical indicators (price series)
+       ├── M7: factor models, risk, optimization (returns series)
+       ├── M8: multidimensional integration, spectral analysis
+       └── M9: options pricing, fixed income, vol surfaces (underlying, rate, vol)
 ```
 
-Resolution order for each exposure entry: `Country` directly; `Block` as the median over its
-members; `Composite` as the median over the union of its blocks' members.
+The dependency graph built in M1 serves all domains. Each domain registers its operations as named nodes. The same backend router, shared-memory representation, C ABI, and deterministic execution policy apply uniformly. No domain duplicates M1 capabilities.
 
-Three rules that are easy to get wrong:
+### 5.1 Composition Patterns
 
-- **Net against the base market.** Country risk is risk *above* a mature market, and the
-  mature-market premium already embeds the base market's own risk. Never assume the base market is
-  the top rating — read its rating from the data like any other country's. Hardcoding a zero base
-  inflates every country's premium the moment the base market is downgraded.
-- **Blocks are medians, not weighted averages.** No weighting data exists in the reference tables.
-  Introducing population or output weights from elsewhere would put numbers into the engine that do
-  not come from the data.
-- **Report dispersion.** Blocks coarse enough to match real disclosure are not credit-homogeneous.
-  Each block's internal spread is reported alongside its premium rather than hidden inside a median.
-
-### 5.9 Which cost of debt to use
-
-First available tier wins; the tier used is reported.
-
-1. Yield to maturity on the company's traded straight bonds, where liquid quotes exist
-2. Risk-free rate + default spread for the company's issuer rating
-3. Risk-free rate + default spread from a synthetic rating derived from interest coverage
-4. Interest expense ÷ average total debt — last resort, as it reflects historical coupons rather
-   than current marginal borrowing cost
-
-Tiers are never blended. If total debt is below 1% of total capital, the company is treated as
-all-equity financed: debt weight zero, cost of capital equals cost of equity.
-
-### 5.10 How capital is weighted
-
-Equity at **market** value; debt at book value unless traded quotes exist. Weights must sum to one.
-Capitalized lease liabilities are included in debt whenever leases are capitalized, consistent with
-§5.5.
-
-### 5.11 How growth is set
-
-**Stage 1 — sustainable, from history.**
-
-1. Take the trailing `roic_window` years of return on invested capital.
-2. Exclude any year that is negative, or more than three times the median of the remaining years, as
-   an outlier. Record each exclusion.
-3. Apply `roic_statistic` (median by default) to what remains.
-4. Repeat for the reinvestment rate.
-5. `growth = return on capital × reinvestment rate`, capped at `high_growth_cap`.
-
-The reinvestment rate may exceed 100% — growth funded by external capital is legitimate and is not
-clamped. Where it does, how the funding gap is financed is reported.
-
-Consensus estimates and management guidance are **cross-checks**, not inputs. Where guidance
-conflicts with the fundamental calculation, the calculation governs and the divergence is reported.
-
-**Stage 2 — transition, by interpolation.** Growth, return on capital and tax rate each move
-linearly from their stage-1 value to their terminal value in equal annual increments. The reinvestment
-rate is then *derived* each year as `growth ÷ return on capital`, never assumed.
-
-The resulting return-on-capital path must be **continuous**: the final transition year sits one
-increment from the terminal value. A discontinuity at the terminal boundary is a methodology failure,
-not a rounding artifact, and the audit treats it as an error.
-
-**Stage 3 — stable.**
-
-```
-stable_growth  = min(risk-free rate of forecast currency,
-                     long-run inflation + long-run real growth of exposure-weighted markets)
-stable_return  = cost of capital + moat_spread          # moat_spread defaults to 0
-stable_reinvest = stable_growth ÷ stable_return
+```text
+market data
+     │
+     ▼
+returns (Arrow compute)
+     │
+     ├── volatility (TA-Lib Bollinger Bands, rolling std)
+     ├── factor model (BLAS covariance, LAPACK PCA)
+     └── option input (QuantLib vol surface from realized vol)
 ```
 
-Hard constraint: stable growth cannot exceed the risk-free rate. If the selection rule returns more,
-the risk-free rate binds.
-
-`moat_spread` is a **sourced input**, because whether a competitive advantage will persist is not
-calculable. What *is* calculable, and therefore computed: the realized return-on-capital spread over
-cost of capital for every historical year, its average, and how many recent years sustained it. An
-asserted spread exceeding the realized average is flagged. The engine supplies the evidence; it does
-not form the judgement.
-
-### 5.12 How the tax rate evolves
-
-| Years | Rate |
-|---|---|
-| Base, 1–5 | effective rate, from taxes paid ÷ pre-tax income |
-| 6–10 | linear convergence to the marginal statutory rate of the domicile |
-| Terminal | marginal statutory rate |
-
-Effective rates reflect timing differences, loss carryforwards and credits that do not persist in
-perpetuity. Holding one forever is a permanent free lunch. Where a global-minimum-tax adjusted rate
-binds, it is used.
-
-### 5.13 How cash flow is projected
-
-```
-after_tax_operating_income(t) = after_tax_operating_income(t−1) × (1 + growth(t))
-reinvestment(t)               = after_tax_operating_income(t) × reinvestment_rate(t)
-cash_flow(t)                  = after_tax_operating_income(t) − reinvestment(t)
-discount_factor(t)            = 1 ÷ (1 + cost_of_capital)^t        # or ^(t−0.5) if mid-period
-```
-
-Stock-based compensation does **not** appear. It is an operating expense already deducted inside
-operating income, and it stays there — see §5.15.
-
-### 5.14 How terminal value is set
-
-Primary, Gordon growth:
-
-```
-terminal_flow  = after_tax_operating_income(final) × (1 + stable_growth) × (1 − stable_reinvest)
-terminal_value = terminal_flow ÷ (cost_of_capital − stable_growth)
-```
-
-Cross-check, exit multiple: final-year operating earnings × the sector multiple. **The multiple must
-match the adjustment state of the metric** — an R&D-adjusted earnings figure requires the
-R&D-adjusted multiple, or the comparison is meaningless.
-
-Checks: the spread between cost of capital and stable growth must exceed one percentage point, or
-terminal value is numerically unstable; terminal value should be under 75% of total operating value;
-the two methods should agree within 20%.
-
-When terminal return on capital equals cost of capital, terminal value reduces algebraically to
-`after_tax_operating_income ÷ cost_of_capital`. That identity is a free correctness test of the
-entire terminal block and should be asserted.
-
-### 5.15 How equity compensation is handled
-
-Equity compensation creates two distinct claims, each handled exactly once, in a different place.
-
-| Claim | Treatment | Where |
-|---|---|---|
-| Ongoing cost of future grants | expensed; left inside operating income, never added back | projection |
-| Accumulated claim from past grants | valued at fair value, deducted as a senior claim | equity bridge |
-
-Per-share value then divides by **shares outstanding**, not treasury-method diluted shares, because
-the option claim has already been valued in full.
-
-Adding the expense back treats a recurring real cost as free, inflating every projected cash flow.
-The treasury stock method compounds it, capturing only intrinsic value and ignoring time value —
-which for at- or out-of-the-money options is most of what they are worth.
-
-**Fallback** when option-level data is unavailable: expense the compensation as above, use
-treasury-method diluted shares, and omit the separate deduction. Exactly one of the two routes
-applies. Combining them double-counts; combining either with an add-back is the error this rule
-exists to prevent.
-
-### 5.16 How equity value is derived
-
-```
-operating_asset_value = Σ present value of projected flows + present value of terminal value
-
-equity_value = operating_asset_value
-             − total debt (gross, including capitalized leases)
-             + cash and marketable securities (gross)
-             + non-operating assets and cross-holdings, at fair value
-             − minority interests, at fair value
-             − fair value of outstanding options and unvested awards
-
-per_share = equity_value ÷ shares outstanding
-```
-
-Expressed in gross debt and gross cash deliberately. Writing the bridge in terms of net debt *and*
-adding cash back subtracts debt once but adds cash twice. The sum of present values is operating
-asset value, not enterprise value; non-operating items enter in the bridge, and the terminal-value
-percentage check uses operating asset value as its denominator.
-
-### 5.17 How the market-implied growth rate is found
-
-Exactly one unknown: stage-1 growth. Everything else — cost of capital, returns, terminal
-assumptions, margins, share count, the full bridge — is held at base case. Solve
-
-```
-valuation(growth) − market price per share = 0
-```
-
-by bisection over a fixed bracket, using a **fixed iteration count** rather than a tolerance test.
-Value is monotone in stage-1 growth, so bisection is safe, and a fixed count cannot vary across
-platforms the way an early-exit tolerance can.
-
-Fixing the free variable is not optional. Without it the question is underdetermined: infinitely
-many combinations of growth, margin, return and discount rate reproduce the same price.
-
-### 5.18 How uncertainty is explored
-
-| Analysis | Construction |
-|---|---|
-| Sensitivity grid | re-run across cost-of-capital and stable-growth offsets |
-| Scenarios | re-run with explicit override records, not hand-written results |
-| Simulation | re-run with sampled inputs, fixed seed, reported percentiles |
-
-Simulation requires a **counter-based** random number generator, where draw *i* for variable *j* is
-a pure function of seed, *i* and *j*. With a sequential generator, parallelism and reproducibility
-become mutually exclusive; with a counter-based one, thread count cannot change the answer.
+The same covariance matrix computed from Damodaran-adjusted fundamentals feeds into portfolio optimization. The same yield curve from QuantLib feeds Damodaran cost-of-debt. The same spectral decomposition feeds both cycle detection in M8 and signal filtering in M6.
 
 ---
 
-## 6. Determinism contract
+## 6. The Moat
 
-The engine's premise is that a valuation can be reproduced years later. That requires more than
-pure functions.
+Yamori's defensibility is not function count. Function counts are easy to copy and specialized libraries will nearly always have deeper coverage. The moat is structural:
 
-**Identity.** Every result carries a hash over the canonicalized inputs, the policy record, the
-engine version and the dataset snapshot manifest. Two runs agreeing on the hash must agree on every
-output number. Golden tests assert on the hash rather than on individual figures.
+```text
+common data representation
+zero-copy adaptation
+stable semantic contracts
+shared-memory architecture
+backend routing
+error normalization
+deterministic execution policy
+cross-platform backend builds
+dependency compatibility
+ABI stability
+test vectors across backend upgrades
+language bindings generated from one ABI
+```
 
-**Arithmetic.** Binary floating point is deterministic for the four basic operations and square root
-given a fixed operation order. It is *not* deterministic across platforms for transcendental
-functions, and compilers may legally reassociate. Therefore:
-
-1. **Never use a power function for discount factors.** Compute `(1 + r)^t` by iterated
-   multiplication. Power functions are not correctly rounded and vary across math library versions
-   and platforms; iterated multiplication is bit-identical everywhere. This single rule removes the
-   most likely source of cross-machine divergence in the whole engine.
-2. No fast-math or fused-multiply-add contraction where the unfused form is the specified arithmetic.
-3. Fixed summation order. Present values accumulate from the first year forward. No parallel
-   reduction in any path reaching a reported number.
-4. Fixed iteration counts in solvers, not tolerance-based early exits.
-5. No unordered-container iteration in numeric paths.
-
-**Representation.** Model in binary floating point; a discounted cash flow is not a ledger, and
-exact decimal buys no accuracy where the inputs carry estimation error of several percent. Use exact
-decimal only at the two boundaries: parsing reported statement values, which are exact decimal
-quantities and must round-trip, and rendering. Round half-even at render time, to the currency's
-minor unit for per-share figures and to four decimal places for rates.
-
-**Currency.** Make currency part of a monetary value's type, so that adding two different currencies
-is rejected at construction rather than discovered in a result. Conversion happens only through an
-explicit rate carrying its own date and source. Where currency must be dynamic — reading a dataset
-— keep a separate dynamic representation with one checked conversion into the static form, so there
-is exactly one place a currency error can occur.
+If Yamori becomes merely a collection of wrappers, there is little reason for it to exist. If it becomes the **standard data plane and execution contract through which heterogeneous quantitative engines compose**, it solves a substantially harder problem.
 
 ---
 
-## 7. Audit
+## 7. Audit and Observability
 
-The audit is not a report section; it is the mechanism that makes the division of labour
-enforceable. Each check yields a stable identifier, a severity, the actual value, the limit and a
-message.
+### 7.1 Deterministic Audit Trail
+
+Every valuation carries a complete audit trail: dataset manifest hashes, policy field values, source document citations, adjustment decisions, and provenance chains for every computed metric. The `provenance_hash = BLAKE3(canonical(inputs) ‖ policy ‖ semver ‖ dataset manifest)` enables machine-checkable reproducibility — any third party can verify the hash against their own computation. Golden tests assert on provenance hashes, not just numeric outputs.
+
+### 7.2 Observability Surface
+
+Phase 0 exposes runtime state through CLI output and in-memory snapshots. Every pipeline stage reports completion states, metric counters, and diagnostic signals:
+
+| Signal | Stage | Meaning |
+|--------|-------|---------|
+| Validated records | ingest | Financial periods and market data accepted |
+| Source conflicts | resolve | Competing values for the same element |
+| Data gaps | resolve | Required fields absent from all sources |
+| R&D capitalized | adjust | Capitalization adjustment applied |
+| Leases capitalized | adjust | Lease capitalization applied |
+| ROIC window | derive | Trailing years used for statistics |
+| Growth stages | derive | High-growth + transition + terminal years |
+| Projected years | project | Forward projection horizon |
+| Sensitivity runs | analyse | Grid cells re-evaluated |
+| Scenario runs | analyse | Named scenarios executed |
+| Reverse DCF solves | analyse | Bisection iterations for implied growth |
+| Audit checks | audit | Total checks, by severity |
+| Gold hash | audit | BLAKE3 provenance hash |
+
+### 7.3 Failure Transparency
+
+Failures are not silent. The `!Error` convention (no `unreachable` in library code, no silent fallback values) ensures that if a pipeline stage cannot produce a result, the error is returned and the calling stage reports the gap. Failure categories include: missing required periods, unresolved source conflicts, negative operating income with negative median margin, stable growth exceeding risk-free rate, WACC minus stable growth below 100bp, terminal value numerically unstable, currency mismatch, SBC double-counting, partial capitalization, and dataset checksum mismatch.
+
+### 7.4 Alerting Policy
+
+Future alerting should use a bounded severity taxonomy:
 
 | Severity | Meaning |
-|---|---|
-| `Error` | the methodology is violated; the result may not be rendered as a conclusion |
-| `Warn` | the result is usable but a stated threshold is breached |
-| `Info` | a convention or selection worth recording |
-
-Errors cover the rules that make a valuation internally coherent: stable growth within the risk-free
-rate, an adequate spread between discount rate and stable growth, one currency throughout, the
-growth-equals-return-times-reinvestment identity holding every year, a continuous return path,
-accounting adjustments propagated completely, country risk netted against the base market, equity
-compensation handled by exactly one route, and stage-1 assumptions grounded in history rather than
-asserted.
-
-Warnings cover thresholds that indicate strain rather than incoherence: terminal value share, method
-divergence, base-year distortion, block dispersion, undisclosed exposure, computed cost of capital
-against its sector benchmark, and an asserted moat spread exceeding realized history.
-
-Because an `Error` blocks rendering, a valuation that violates the methodology fails loudly instead
-of reading plausibly. That is the point: narrative layers can describe a result but cannot rescue
-one.
+|----------|---------|
+| `critical` | Data integrity failure, audit Error verdict, dataset checksum mismatch, or valuation blocking rendering |
+| `warning` | Degraded data quality, sustained gap count, terminal value share >75%, or methodology warnings |
+| `info` | Non-paging operational signal for awareness, provenance correlation, or audit trails |
 
 ---
 
-## 8. Boundaries
+## 8. Boundary: What Yamori Is and Is Not
 
-### What is not the engine's job
+### 8.1 What Yamori Is
 
-| Task | Owner |
-|---|---|
-| Locating filings, transcripts, presentations | retrieval layer |
-| Extracting values from documents | extraction layer, validated on ingest |
-| Classifying a statement as fact, guidance or opinion | extraction layer |
-| Assigning a company to a sector | curated input, persisted |
-| Supplying geographic exposure weights | input, from the segment note |
-| Selecting comparable companies | curated input, persisted |
-| Asserting a durable competitive advantage | input, defaulting to none |
-| Explaining a discrepancy the engine surfaced | narrative layer |
-| Writing prose | narrative layer |
+- A native quantitative-computing runtime
+- A composable layer over best-in-class libraries
+- One integration → many quantitative capabilities
+- A stable front end to an evolving backend ecosystem
+- The portability, interoperability, and composition layer between applications and the fragmented native quantitative ecosystem
 
-Everything else is arithmetic, and arithmetic belongs to the engine.
+### 8.2 What Yamori Is Not
 
-### The contract with a narrative layer
+| Not | Because |
+|-----|---------|
+| Another NumPy implementation | NumPy's C API requires Python; Yamori's C ABI is language-neutral |
+| Another SciPy | SciPy delegates to C/C++/Fortran — Yamori's contribution is runtime composition, not algorithm implementation |
+| Another pandas | pandas' index alignment semantics would conflict with predictable native execution |
+| Another Polars | Polars is the best DataFrame query engine; Yamori does not compete on DataFrame execution alone |
+| Another PyMC | PyMC is probabilistic programming (Bayesian inference); Yamori's Monte Carlo is lower-level and broader |
+| Another QuantLib | QuantLib is a comprehensive derivatives framework; it is one backend inside Yamori |
+| A wrapper collection | Wrappers are trivially copied; the moat is data representation, routing, and determinism |
 
-A narrative layer receives the result, the audit and the qualitative claims, and may describe,
-compare, caveat and recommend. It may not alter a number, recompute a figure, or supply a value the
-engine reported as missing. Where the engine reports a gap, the correct narrative response is to
-state the gap and what it costs — not to fill it.
+### 8.3 Non-Capabilities
 
-This is why intermediate columns are in the output. A layer that must recompute a discount factor to
-render a table is a layer that can get it wrong.
+Yamori does not provide: algorithm implementations, interactive research notebooks (Python is a frontend, not the architecture), real-time market data feeds, trading execution or order management, machine learning or neural network inference, natural language processing or sentiment analysis, portfolio management or position tracking (beyond analytics on portfolio inputs), or any capability that leaks backend types through Yamori's public surface.
 
-### Extension points
+---
 
-- **Reference data refresh** — tables are versioned snapshots. A valuation names the snapshot it
-  used, so a refresh re-dates rather than invalidates prior work.
-- **New cross-checks** — additive to the cross-check list; no change to the core.
-- **Alternative exposure bases** — the country-risk resolver takes exposure weights and a derivation
-  rule; a different rule is a new policy value, not a rewrite.
-- **Multi-segment valuation** — sum-of-the-parts is the core invoked per segment with segment-level
-  inputs, then aggregated. The core needs no knowledge of segments.
+## 9. Strategic Flywheel
+
+If the architecture works, each additional backend increases the value of every frontend:
+
+```text
+new backend
+      │
+      ▼
+Yamori C ABI
+      │
+      ├── immediately usable from Python
+      ├── immediately usable from Zig
+      ├── immediately usable from Rust
+      └── immediately usable from C++, Go, Java, C#, ...
+```
+
+And each new frontend increases the value of every backend. This creates a two-sided technical flywheel:
+
+```text
+            more backends
+                 ▲
+                 │
+                 │
+more languages ◄─┼─► more capabilities
+                 │
+                 ▼
+        stronger common ABI
+```
+
+That is a fundamentally different ecosystem model from a language-specific package.
+
+---
+
+## 10. Long-Term Position
+
+```text
+          Quantitative application
+                   │
+                   ▼
+                Yamori
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+ numerical      analytics    finance
+ engines         engines      engines
+```
+
+Yamori sits between applications and the fragmented native quantitative ecosystem. It is the **portability, interoperability and composition layer**.
+
+---
+
+## Cross-References
+
+- Product bet, target user, and priority stack: [`doc/strategy/positioning.md`](../strategy/positioning.md)
+- Supported capabilities and backend library table: [`doc/strategy/capabilities.md`](../strategy/capabilities.md)
+- Milestone details and completion signals: [`doc/strategy/roadmap/milestones/README.md`](../strategy/roadmap/milestones/README.md)
+- Execution plans: [`doc/execution/plans/`](../execution/plans/)
+- Observability surface: [`doc/execution/observability.md`](../execution/observability.md)
+- Telemetry semantics: [`doc/execution/telemetry.md`](../execution/telemetry.md)
+- Coding conventions: [`doc/execution/contribution/yamori.md`](../execution/contribution/yamori.md)
