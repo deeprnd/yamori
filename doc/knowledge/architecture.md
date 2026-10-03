@@ -113,8 +113,15 @@ Array
   shape         : List<Int64>            # dimensions
   strides       : List<Int64>            # byte offsets per dimension
   alignment     : Int64                  # memory alignment requirement
-  ownership     : Enum{ Owned, Borrowed, Foreign }
+  ownership     : Enum{ Owned, Borrowed, Foreign, Shared }
   lifetime      : LifetimeDescriptor     # who owns, who may access
+
+Owned       — Yamori allocated the memory and is responsible for freeing it.
+Borrowed    — Yamori temporarily references memory owned elsewhere.
+Foreign     — Memory comes from another runtime/library and carries a release callback.
+Shared      — Memory belongs to a shared-memory region whose lifetime is managed externally.
+
+This allows the same data model to work with heap memory, memory-mapped files, Arrow buffers, shared-memory workspaces, foreign-language arrays, plugin memory, and market-data feeds without requiring different high-level APIs.
 
 Series
   array         : Array                  # inherits all array fields
@@ -130,7 +137,36 @@ Table
 
 For columnar data, Arrow's C Data Interface provides the interoperability model where practical — a language-independent columnar representation and a C Data Interface specifically designed for cross-runtime, zero-copy exchange over a shared C ABI.
 
-#### 2.3.2 Shared Memory
+#### 2.3.2 Null and Missing-Data Policy
+
+Financial data distinguishes several states that must not be conflated:
+
+```text
+Revenue = 0          → actual zero
+Revenue = missing    → null (source value absent)
+Revenue = not reported → null (not applicable)
+Revenue = NaN        → NaN (valid IEEE NaN from calculation failure)
+```
+
+Yamori enforces one policy across all backends:
+
+```text
+missing source value
+    → null
+
+mathematically undefined
+    → null + diagnostic
+
+valid IEEE NaN source
+    → NaN
+
+0
+    → actual zero
+```
+
+Arrow provides the physical mechanism (validity bitmap independent of value buffer). The added value is enforcing the same semantics when data leaves Arrow — adapting each backend (GSL vectors, TA-Lib arrays, QuantLib objects) to map their native "no data" representations back to this unified policy. This matters because zero and missing are radically different in financial statements.
+
+#### 2.3.2.1 Batch and Streaming Computation
 
 ```text
 Process A
@@ -208,6 +244,49 @@ Pins algorithms, pins RNG with explicit seed, enforces deterministic threading p
 
 **The hash identity:** Every result carries a `provenance_hash = BLAKE3(canonical(inputs) ‖ policy ‖ semver ‖ dataset manifest)`. Two runs agreeing on the hash must agree on every output number. Golden tests assert on the hash rather than on individual figures.
 
+### 2.6 Batch and Streaming Computation
+
+Financial computing needs both historical batch processing and live incremental computation.
+
+Yamori exposes consistent concepts for both:
+
+```text
+Batch
+────────────────────────
+Series → operation → Series
+
+Streaming
+────────────────────────
+value → state → new value
+```
+
+For example:
+
+```text
+historical MACD
+Series<f64> → MACD Series
+
+live MACD
+price → MACD state → current MACD
+```
+
+Backends such as TA-Lib can provide the underlying implementation where available. This lets the same runtime support research, historical analytics, backtesting, live market data, terminal indicators, valuation, and risk.
+
+### 2.7 Expression Execution Graph (Future Capability)
+
+Higher-level operations should compose lower-level functions into execution graphs without exposing backend mechanics. An expression such as `VWAP = cumsum(price × volume) / cumsum(volume)` becomes a directed acyclic graph where each node is routed independently to the appropriate backend. This enables:
+
+```text
+reuse temporary buffers
+avoid unnecessary copies
+fuse compatible kernels
+schedule independent operations
+select different backends
+execute over shared memory
+```
+
+without changing the public API. Initially, Yamori executes operations eagerly. An optional expression layer can represent the computation graph, allowing buffer reuse and kernel fusion while keeping the same `ym_array.mul()` / `ym_array.cumsum()` interface.
+
 ---
 
 ## 3. Backend Library Routing
@@ -223,6 +302,49 @@ Pins algorithms, pins RNG with explicit seed, enforces deterministic threading p
 | **FFTW** | Advanced Analytics | Fast Fourier transforms (real/complex DFT, DCT, DST, multi-dimensional transforms, plan-based execution) |
 
 A new library enters Yamori only when a domain requires capabilities the current backends do not provide — not because the library happens to be useful.
+
+### 3.0 Arrow Terminology Clarification
+
+The term "Arrow" is used ambiguously in discussions about Yamori's dependencies. The following distinctions matter for engineering decisions and documentation:
+
+| Term | What it is | Yamori uses it for |
+|------|------------|-------------------|
+| **Apache Arrow** | The overall project + columnar memory format + ecosystem | Umbrella concept only |
+| **Apache Arrow C++** | The main native implementation (C++ library) with arrays, tables, CSV, Compute, IPC | The heavy dependency doing calculations, I/O, and columnar operations |
+| **Arrow C Data Interface** | A tiny C ABI spec for exchanging Arrow data via `ArrowArray`, `ArrowSchema`, `ArrowArrayStream` structs | Zero-copy language-neutral interchange boundary (not a full library) |
+| **nanoarrow** | Lightweight C library that helps produce/consume Arrow C Data Interface structures | The C-side helper for the C ABI layer — avoids manually implementing Arrow struct lifecycle |
+
+When discussing Yamori's dependencies, use **Apache Arrow C++** for the computation library, **Arrow C Data Interface** for the ABI spec, and **nanoarrow** for the C helper. Avoid "Arrow C" — it conflates the C Data Interface with the C++ library.
+
+The dependency sequencing for Yamori milestones:
+
+```text
+M1–M3:
+  Apache Arrow C++ (Core + CSV + Compute)
+  GNU GSL
+
+M4:
+  Apache Arrow C++ (Core + CSV + Compute + IPC)
+  GNU GSL
+  nanoarrow (C Data Interface helpers)
+
+Post-M4:
+  TA-Lib, QuantLib, BLAS/LAPACK, Cuba, FFTW (introduced per domain need)
+```
+
+The relationship is:
+
+```text
+            Apache Arrow project
+                    │
+         ┌──────────┴──────────┐
+         │                     │
+   Arrow C++ library      Arrow format/spec
+         │                     │
+   CSV / Compute / IPC    C Data Interface
+                                 │
+                             nanoarrow
+```
 
 ### 3.1 Invocation Flow
 
@@ -534,7 +656,60 @@ That is a fundamentally different ecosystem model from a language-specific packa
 
 ---
 
-## 10. Long-Term Position
+## 11. LLM Integration Boundary
+
+The valuation engine is designed as a deterministic core with an LLM-powered research layer. The architecture separates calculation from extraction and explanation:
+
+```text
+                  ┌───────────────────────┐
+                  │ Retrieval / filings   │
+                  │ APIs / web / uploads │
+                  └──────────┬────────────┘
+                             │
+                             ▼
+                  ┌───────────────────────┐
+                  │ Extraction layer      │
+                  │ LLM + parsers         │
+                  └──────────┬────────────┘
+                             │
+                         typed inputs
+                             │
+                             ▼
+              ┌──────────────────────────────┐
+              │ Input Resolver / Validator   │
+              │ source priority, periods, FX │
+              └──────────────┬───────────────┘
+                             │
+                             ▼
+              ┌──────────────────────────────┐
+              │ Deterministic Valuation Core │
+              │                              │
+              │ financial metrics            │
+              │ dilution                     │
+              │ beta / CRP / WACC            │
+              │ growth                       │
+              │ projections                  │
+              │ terminal value               │
+              │ equity bridge                │
+              │ reverse DCF                  │
+              │ sensitivity / scenarios      │
+              │ cross-checks                 │
+              └──────────────┬───────────────┘
+                             │
+                             ▼
+                    ValuationResult
+                             │
+                ┌────────────┴────────────┐
+                ▼                         ▼
+        deterministic audit         LLM renderer
+                                   narrative only
+```
+
+The LLM should effectively receive `ValuationResult`, `AuditResult`, and `QualitativeEvidence` and be told: "Do not calculate or change any numeric valuation result. Explain and render the supplied results."
+
+Tasks that remain with the LLM: finding latest filing, extracting values from filing, extracting management claims, classifying statements as fact/guidance/opinion, explaining discrepancies, identifying qualitative moat evidence, writing final narrative.
+
+Everything else — calculations, formula evaluation, sampling, sensitivity, audit checks — is deterministic code. The LLM boundary is: structured extraction in → typed inputs out, deterministic core, structured result → narrative explanation out.
 
 ```text
           Quantitative application
