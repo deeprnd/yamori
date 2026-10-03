@@ -151,7 +151,369 @@ pub const formula = struct {
     }
 };
 
-// ─── Dependency Resolver ───────────────────────────────────────────────
+// ─── Cycle Detection ────────────────────────────────────────────────────
+
+pub const cycleDetector = struct {
+    pub const CycleError = error{
+        CycleDetected,
+    };
+
+    pub const CycleReport = struct {
+        cycle_path: []const []const u8,
+        allocator: std.mem.Allocator,
+    };
+
+    /// DFS helper: returns true if cycle found
+    fn dfsCycle(
+        node: []const u8,
+        adj: std.StringHashMap([]const []const u8),
+        colors: *std.StringHashMap(u8),
+        path: *std.ArrayListUnmanaged([]const u8),
+        alloc: std.mem.Allocator,
+    ) CycleError!bool {
+        // Mark node as Gray (1)
+        (colors.put(node, 1)) catch return CycleError.CycleDetected;
+
+        // Add to current path
+        const node_copy = (alloc.dupe(u8, node)) catch return CycleError.CycleDetected;
+        (path.append(alloc, node_copy)) catch return CycleError.CycleDetected;
+
+        // Visit neighbors (dependencies)
+        if (adj.get(node)) |deps| {
+            for (deps) |dep| {
+                // Get color of neighbor
+                const color = colors.get(dep) orelse continue; // Undefined ref, skip
+
+                if (color == 1) {
+                    // Gray node found → cycle detected!
+                    // Don't free path here — return true to let caller handle cleanup.
+                    return true;
+                } else if (color == 0) {
+                    // White node → recurse
+                    if (try dfsCycle(dep, adj, colors, path, alloc)) {
+                        return true;
+                    }
+                }
+                // Black node → skip
+            }
+        }
+
+        // Mark node as Black (2)
+        (colors.put(node, 2)) catch return CycleError.CycleDetected;
+
+        // Remove from path and free
+        if (path.pop()) |popped| alloc.free(popped);
+
+        return false;
+    }
+
+    /// Detect cycles before adding a new formula
+    /// Returns CycleError.CycleDetected if the new formula would create a cycle
+    pub fn detectCycleBeforeAdd(
+        registry: *const formula.FormulaRegistry,
+        new_formula: formula.NamedFormula,
+        allocator: std.mem.Allocator,
+    ) CycleError!void {
+        // Build adjacency list from existing formulas + new formula
+        var adj = std.StringHashMap([]const []const u8).init(allocator);
+        var all_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        var colors = std.StringHashMap(u8).init(allocator);
+        var path_list: std.ArrayListUnmanaged([]const u8) = .empty;
+
+        var all_clean = false;
+        var adj_clean = false;
+        var colors_clean = false;
+        var path_clean = false;
+
+        // Try to allocate everything; on failure, free what we have.
+        errdefer {
+            if (all_clean == false) {
+                for (all_names.items) |n| allocator.free(n);
+                all_names.deinit(allocator);
+                all_clean = true;
+            }
+            if (adj_clean == false) {
+                var it = adj.iterator();
+                while (it.next()) |entry| {
+                    const srcs = entry.value_ptr.*;
+                    for (srcs) |s| allocator.free(s);
+                    allocator.free(srcs);
+                    allocator.free(entry.key_ptr.*);
+                }
+                adj.deinit();
+                adj_clean = true;
+            }
+            if (colors_clean == false) {
+                colors.deinit();
+                colors_clean = true;
+            }
+            if (path_clean == false) {
+                for (path_list.items) |p| allocator.free(p);
+                path_list.deinit(allocator);
+                path_clean = true;
+            }
+        }
+
+        // Add existing formulas
+        var it = registry.formulas.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr;
+            const val = entry.value_ptr;
+
+            const name_copy = (allocator.dupe(u8, key.*)) catch return;
+            (all_names.append(allocator, name_copy)) catch return;
+
+            if (val.sources.len > 0) {
+                const sources_copy = (allocator.alloc([]const u8, val.sources.len)) catch return;
+                for (val.sources, 0..) |src, idx| {
+                    sources_copy[idx] = (allocator.dupe(u8, src)) catch return;
+                }
+                const key_copy = (allocator.dupe(u8, name_copy)) catch return;
+                (adj.put(key_copy, sources_copy)) catch return;
+            }
+        }
+
+        // Add new formula to adjacency list
+        const new_name_copy = (allocator.dupe(u8, new_formula.name)) catch return;
+        (all_names.append(allocator, new_name_copy)) catch return;
+
+        if (new_formula.sources.len > 0) {
+            const sources_copy = (allocator.alloc([]const u8, new_formula.sources.len)) catch return;
+            for (new_formula.sources, 0..) |src, idx| {
+                sources_copy[idx] = (allocator.dupe(u8, src)) catch return;
+            }
+            const key_copy = (allocator.dupe(u8, new_name_copy)) catch return;
+            (adj.put(key_copy, sources_copy)) catch return;
+        }
+
+        // Initialize all nodes as White (0)
+        for (all_names.items) |node| {
+            (colors.put(node, 0)) catch return;
+        }
+
+        // Run DFS from each unvisited node
+        var cycle_found = false;
+        for (all_names.items) |start_node| {
+            if (colors.get(start_node)) |color| {
+                if (color != 0) continue;
+                if (try dfsCycle(start_node, adj, &colors, &path_list, allocator)) {
+                    cycle_found = true;
+                    break;
+                }
+            }
+        }
+
+        // Mark everything as cleaned BEFORE explicit cleanup so errdefer doesn't double-free
+        all_clean = true;
+        adj_clean = true;
+        colors_clean = true;
+        path_clean = true;
+
+        // Free all_names items
+        for (all_names.items) |n| allocator.free(n);
+        all_names.deinit(allocator);
+
+        // Free adj keys and values
+        var adj_free_it = adj.iterator();
+        while (adj_free_it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            const srcs = entry.value_ptr.*;
+            for (srcs) |s| allocator.free(s);
+            allocator.free(srcs);
+        }
+        adj.deinit();
+
+        // Free colors
+        colors.deinit();
+
+        // Free path_list
+        for (path_list.items) |p| allocator.free(p);
+        path_list.deinit(allocator);
+
+        if (cycle_found) {
+            return CycleError.CycleDetected;
+        }
+    }
+
+    /// Detect all cycles in the graph and return a report with the first cycle found
+    pub fn detectAllCycles(
+        registry: *const formula.FormulaRegistry,
+        allocator: std.mem.Allocator,
+    ) CycleError!CycleReport {
+        // Build adjacency list from registry
+        var adj = std.StringHashMap([]const []const u8).init(allocator);
+        errdefer {
+            var it = adj.iterator();
+            while (it.next()) |entry| {
+                const srcs = entry.value_ptr.*;
+                for (srcs) |s| allocator.free(s);
+                allocator.free(srcs);
+                if (entry.key_ptr.* != null) allocator.free(entry.key_ptr.*);
+            }
+            adj.deinit();
+        }
+
+        var all_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (all_names.items) |n| allocator.free(n);
+            all_names.deinit(allocator);
+        }
+
+        var it = registry.formulas.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr;
+            const val = entry.value_ptr;
+
+            const name_copy = (allocator.dupe(u8, key.*)) catch {
+                return CycleError.CycleDetected;
+            };
+            (all_names.append(allocator, name_copy)) catch {
+                return CycleError.CycleDetected;
+            };
+
+            if (val.sources.len > 0) {
+                const sources_copy = (allocator.alloc([]const u8, val.sources.len)) catch {
+                    return CycleError.CycleDetected;
+                };
+                for (val.sources, 0..) |src, i| {
+                    sources_copy[i] = (allocator.dupe(u8, src)) catch {
+                        return CycleError.CycleDetected;
+                    };
+                }
+                // adj owns its own copy of the name for the key.
+                const key_copy = (allocator.dupe(u8, name_copy)) catch {
+                    return CycleError.CycleDetected;
+                };
+                (adj.put(key_copy, sources_copy)) catch {
+                    return CycleError.CycleDetected;
+                };
+            }
+        }
+
+        // DFS three-color marking
+        var colors = std.StringHashMap(u8).init(allocator);
+        errdefer colors.deinit();
+
+        var path_list: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (path_list.items) |p| allocator.free(p);
+            path_list.deinit(allocator);
+        }
+
+        // Initialize all nodes as White (0)
+        var color_it = all_names.iterator();
+        while (color_it.next()) |item| {
+            (colors.put(item.*, 0)) catch {
+                return CycleError.CycleDetected;
+            };
+        }
+
+        // Run DFS from each unvisited node, return first cycle found
+        var cycle_path: std.ArrayListUnmanaged([]const u8) = .empty;
+        errdefer {
+            for (cycle_path.items) |cp| allocator.free(cp);
+            cycle_path.deinit(allocator);
+        }
+
+        for (all_names.items) |start_node| {
+            if (colors.get(start_node)) |color| {
+                if (color != 0) continue;
+                if (dfsCycleWithReport(start_node, adj, &colors, &path_list, &cycle_path, allocator)) {
+                    break;
+                }
+            }
+        }
+
+        // Cleanup
+        for (all_names.items) |n| allocator.free(n);
+        all_names.deinit(allocator);
+
+        // Free adj keys and values
+        var adj_free_it = adj.iterator();
+        while (adj_free_it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            const srcs = entry.value_ptr.*;
+            for (srcs) |s| allocator.free(s);
+            allocator.free(srcs);
+        }
+        adj.deinit();
+
+        return CycleReport{
+            .cycle_path = (cycle_path.toOwnedSlice(allocator)) catch {
+                return CycleError.CycleDetected;
+            },
+            .allocator = allocator,
+        };
+    }
+
+    /// DFS helper that collects cycle path for report
+    fn dfsCycleWithReport(
+        node: []const u8,
+        adj: std.StringHashMap([]const []const u8),
+        colors: *std.StringHashMap(u8),
+        path: *std.ArrayListUnmanaged([]const u8),
+        cycle_path: *std.ArrayListUnmanaged([]const u8),
+        alloc: std.mem.Allocator,
+    ) CycleError!bool {
+        // Mark node as Gray (1)
+        (colors.put(node, 1)) catch return CycleError.CycleDetected;
+
+        // Add to current path
+        const node_copy = (alloc.dupe(u8, node)) catch return CycleError.CycleDetected;
+        (path.append(alloc, node_copy)) catch return CycleError.CycleDetected;
+
+        // Visit neighbors (dependencies)
+        if (adj.get(node)) |deps| {
+            for (deps) |dep| {
+                const color = colors.get(dep) orelse continue;
+
+                if (color == 1) {
+                    // Cycle detected! Extract cycle from path
+                    var found = false;
+                    for (path.items) |p| {
+                        if (found) {
+                            const p_copy = (alloc.dupe(u8, p)) catch return CycleError.CycleDetected;
+                            (cycle_path.append(alloc, p_copy)) catch return CycleError.CycleDetected;
+                        }
+                        if (std.mem.eql(u8, p, dep)) {
+                            found = true;
+                            const p_copy = (alloc.dupe(u8, p)) catch return CycleError.CycleDetected;
+                            (cycle_path.append(alloc, p_copy)) catch return CycleError.CycleDetected;
+                        }
+                    }
+                    if (!found) {
+                        const dep_copy = (alloc.dupe(u8, dep)) catch return CycleError.CycleDetected;
+                        (cycle_path.append(alloc, dep_copy)) catch return CycleError.CycleDetected;
+                    }
+                    return true;
+                } else if (color == 0) {
+                    if (try dfsCycleWithReport(dep, adj, colors, path, cycle_path, alloc)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Mark node as Black (2)
+        (colors.put(node, 2)) catch return CycleError.CycleDetected;
+
+        // Remove from path and free
+        if (path.pop()) |popped| alloc.free(popped);
+
+        return false;
+    }
+
+    /// Free a CycleReport
+    pub fn cycleReportFree(report: CycleReport) void {
+        const alloc = report.allocator;
+        for (report.cycle_path) |cp| {
+            alloc.free(cp);
+        }
+        alloc.free(report.cycle_path);
+    }
+};
+
+// ─── Dependency Resolver ────────────────────────────────────────────────
 
 pub const dependencyResolver = struct {
     pub const DependencyResolver = struct {
@@ -350,6 +712,8 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
+// ─── Dependency Resolver Tests ──────────────────────────────────────────
+
 test "linear_chain: A→B→C produces [A, B, C]" {
     const allocator = std.testing.allocator;
     var registry = try formula.registryInit(allocator);
@@ -421,7 +785,6 @@ test "diamond_dependency: A→B, A→C, B→D, C→D" {
     try expectEqualStrings("A", result.ordered_names[0]);
     try expectEqualStrings("D", result.ordered_names[3]);
 
-    // B and C can be in either order, both after A and before D.
     var b_idx: ?usize = null;
     var c_idx: ?usize = null;
     for (result.ordered_names, 0..) |name, i| {
@@ -480,7 +843,6 @@ test "multiple_chains_parallel: A→B and X→Y" {
 
     try expectEqual(4, result.ordered_names.len);
 
-    // A must be before B, X must be before Y.
     var a_idx: ?usize = null;
     var b_idx: ?usize = null;
     var x_idx: ?usize = null;
@@ -498,8 +860,6 @@ test "multiple_chains_parallel: A→B and X→Y" {
         if (y_idx) |y| { try expect(x < y); } else unreachable;
     } else unreachable;
 
-    // Correct order: A (pos 0), B (pos 1, freed after A, B < X lex),
-    // X (pos 2, was in queue), Y (pos 3, freed after X).
     try expectEqualStrings("A", result.ordered_names[0]);
     try expectEqualStrings("B", result.ordered_names[1]);
     try expectEqualStrings("X", result.ordered_names[2]);
@@ -526,7 +886,6 @@ test "complex_diamond: A→B, A→C, B→D, C→D, D→E" {
     try expectEqualStrings("A", result.ordered_names[0]);
     try expectEqualStrings("E", result.ordered_names[4]);
     try expectEqualStrings("D", result.ordered_names[3]);
-    // B and C between A and D in lex order.
     try expectEqualStrings("B", result.ordered_names[1]);
     try expectEqualStrings("C", result.ordered_names[2]);
 }
@@ -595,4 +954,161 @@ test "determinism: same input 10 times produces identical output" {
             try expectEqualStrings(exp, result.ordered_names[idx]);
         }
     }
+}
+
+// ─── Cycle Detection Tests ──────────────────────────────────────────────
+
+test "simple_cycle: A→B, B→A detects cycle" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "A",
+        .sources = &.{},
+        .operation = "dummy",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "B",
+        .sources = &.{"A"},
+        .operation = "dummy",
+    });
+
+    // Adding A again with source B should detect cycle B→A→B
+    const err = cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "A",
+        .sources = &.{"B"},
+        .operation = "dummy",
+    }, allocator);
+
+    try expect(err == cycleDetector.CycleError.CycleDetected);
+}
+
+test "longer_cycle: A→B→C→A detects cycle" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "B", .sources = &.{"A"}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "C", .sources = &.{"B"}, .operation = "d" });
+
+    // Overwriting A with source C creates cycle A→C→B→A
+    const err = cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "A",
+        .sources = &.{"C"},
+        .operation = "d",
+    }, allocator);
+
+    try expect(err == cycleDetector.CycleError.CycleDetected);
+}
+
+test "self_reference: A→A detects cycle" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "A",
+        .sources = &.{},
+        .operation = "dummy",
+    });
+
+    const err = cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "A",
+        .sources = &.{"A"},
+        .operation = "dummy",
+    }, allocator);
+
+    try expect(err == cycleDetector.CycleError.CycleDetected);
+}
+
+test "no_cycle_linear: A→B→C succeeds" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "B", .sources = &.{"A"}, .operation = "d" });
+
+    try cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "C",
+        .sources = &.{"B"},
+        .operation = "d",
+    }, allocator);
+}
+
+test "no_cycle_diamond: A→B, A→C, B→D, C→D succeeds" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "B", .sources = &.{"A"}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "C", .sources = &.{"A"}, .operation = "d" });
+
+    try cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "D",
+        .sources = &.{"B", "C"},
+        .operation = "d",
+    }, allocator);
+}
+
+test "undefined_reference_no_cycle: Ghost ref doesn't trigger cycle" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "X",
+        .sources = &.{"Ghost"},
+        .operation = "d",
+    });
+
+    // Ghost is not in registry, so it's skipped in DFS
+    try cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "Y",
+        .sources = &.{"Ghost"},
+        .operation = "d",
+    }, allocator);
+}
+
+test "cycle_through_undefined: partial graph then close cycle" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{"B"}, .operation = "d" });
+    // B is not in registry yet (undefined ref), so no cycle detected
+
+    // Now add B that references A → cycle A→B→A
+    const err = cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "B",
+        .sources = &.{"A"},
+        .operation = "d",
+    }, allocator);
+
+    try expect(err == cycleDetector.CycleError.CycleDetected);
+}
+
+test "multiple_cycles_detects_one: two separate cycles" {
+    const allocator = std.testing.allocator;
+    var registry = try formula.registryInit(allocator);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "B", .sources = &.{"A"}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "C", .sources = &.{}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "D", .sources = &.{"C"}, .operation = "d" });
+
+    // Overwrite A to depend on D → A→D→C, B→A. B→A→D→C. No cycle from that.
+    // But overwriting A with source D creates: A→D→C (no cycle back to A from C).
+    // Instead: overwrite A to depend on B → A→B→A cycle (one cycle, ignoring the C→D chain).
+    const err = cycleDetector.detectCycleBeforeAdd(&registry, .{
+        .name = "A",
+        .sources = &.{"B"},
+        .operation = "d",
+    }, allocator);
+
+    try expect(err == cycleDetector.CycleError.CycleDetected);
 }
