@@ -1,0 +1,54 @@
+---
+# Yamori Security CI: gitleaks + Zig ReleaseSafe sanitize checks.
+# Lightweight — runs in parallel with main CI.
+
+name: Security
+
+'on':
+  push:
+    branches: [main, 'story/**', 'fix/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  security-gitleaks:
+    name: Security / Gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks
+
+      - name: Run gitleaks check
+        run: just security-gitleaks-check-yamori
+
+  security-sanitize:
+    name: Security / Sanitize (Zig ReleaseSafe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.17.0
+
+      - name: Run sanitize check
+        run: just security-sanitize-check-yamori

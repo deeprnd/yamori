@@ -1,0 +1,22 @@
+title = "Gitleaks config for Yamori source tree"
+
+[extend]
+  useDefault = true
+
+[allowlist]
+  paths = [
+    # Ignore third-party / vendored code
+    '''../opt/.*''',
+    '''../content/.*''',
+    # Ignore build artifacts and caches
+    '''build/.*''',
+    '''.zig-cache/.*''',
+    # Ignore test fixture files that may contain example tokens
+    '''test_.*\\.zig''',
+  ]
+  # Values that look like secrets but are legitimate in this codebase
+  regexes = [
+    '''dGhlIHNhbXBsZSBub25jZQ==''',  # RFC 6455 WebSocket example nonce
+    '''sample[_-]?token''',
+    '''EXAMPLE[_-]?API[_-]?KEY''',
+  ]
