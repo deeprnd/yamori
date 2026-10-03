@@ -30,10 +30,9 @@ Example:
 
 GitHub label guidance for epic creation:
   - Required issue-kind label: `type/epic`.
-  - Add all relevant boundary/domain labels covered by the child stories, such
-    as `area/agents`, `area/audit`, `area/crypto`, `area/investing`, `area/operations`,
-    `area/payments`, `area/platform`, `area/security`, `area/social`, `area/trust`,
-    `type/documentation`, or `type/feature`.
+  - Add all relevant boundary/domain labels covered by the child stories.
+    See doc/strategy/templates/label-template.md for the full label inventory,
+    grouped by category (area/, type/, priority/, resolution/, community/).
   - Epics may carry several boundary/domain labels because they comprise
     several stories across domains.
   - Do not add resolution or triage labels during normal epic creation, such as

@@ -40,10 +40,9 @@ GitHub label guidance for story creation:
   - Required issue-kind label: `type/story`.
   - Related issue-kind labels: parent issues use `type/epic`; child issues use
     `type/task`.
-  - Add exactly one boundary/domain label for the story's primary ownership:
-    `area/agents`, `area/audit`, `area/crypto`, `area/investing`, `area/operations`,
-    `area/payments`, `area/platform`, `area/security`, `area/social`, `area/trust`,
-    or `type/documentation`.
+  - Add exactly one boundary/domain label for the story's primary ownership.
+    See doc/strategy/templates/label-template.md for the full label inventory,
+    grouped by category (area/, type/, priority/, resolution/, community/).
   - If a story needs several boundary/domain labels, split it into smaller
     stories under the same epic.
   - Add `enhancement` for a new product/runtime capability when useful.
