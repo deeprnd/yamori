@@ -5,7 +5,7 @@ semantics.
 
 The current varanos implementation exposes telemetry as in-memory snapshots and
 CLI output. It does not yet expose a Prometheus-compatible scrape endpoint.
-Firedancer's existing metrics substrate remains under `src/disco/metrics` and
+The existing metrics substrate remains under `src/disco/metrics` and
 should be reused where practical when a `valmetr` module becomes a production
 metrics module for varanos.
 
@@ -167,7 +167,7 @@ Forbidden examples:
 
 ## Generated Metrics
 
-If Firedancer metrics definitions under `src/disco/metrics/metrics.xml` change,
+If metrics definitions under `src/disco/metrics/metrics.xml` change,
 regenerate metrics with:
 
 ```bash

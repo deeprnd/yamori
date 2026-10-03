@@ -7,7 +7,7 @@ The current repo does not ship a local Prometheus/Grafana/Loki/Tempo Compose
 stack for varanos. Phase 0 exposes runtime metrics and diagnostics through the
 Zig workspace and in-memory valuation snapshots. The intended production
 direction is still a `valmetr`-style metrics module and a `valdiag`-style
-diagnostics module, mirroring the Firedancer approach taken in Tickoni.
+diagnostics module, following proven high-performance patterns.
 
 ## Principle
 

@@ -1,9 +1,9 @@
-# Tickoni Security
+# Yamori Security
 
-This document summarizes Tickoni's security model and the repo security
+This document summarizes Yamori's security model and the repo security
 checks exposed through the `justfile`.
 
-Tickoni retains a Firedancer-derived runtime foundation. Agent harness code
+Yamori retains a low-level C runtime foundation. Agent harness code
 should live above that foundation instead of being mixed into low-level
 networking, shared-memory channel, tile runtime, or kernel-interface code.
 
@@ -16,7 +16,7 @@ change is necessary
 
 ## Security Model
 
-Tickoni assumes agents are not inherently trustworthy.
+Yamori assumes agents are not inherently trustworthy.
 
 Security posture:
 
@@ -72,11 +72,11 @@ checks a contributor or reviewer can apply line by line.
 - Do not assume a callee's output is well-formed because the call returned
   without an error. Validate pointers, lengths, and footprints a C function
   actually returns before dereferencing or copying them, especially across
-  the `src/tickoni/c_abi` boundary; a null or zero-value output where a
+  the `src/yamori/c_abi` boundary; a null or zero-value output where a
   positive value is expected is a failure, not a valid edge case.
 - Never let an unchecked or ignored error keep propagating into persistence,
   audit, or an external adapter call. Follow the Error Handling rules in
-  `doc/execution/contribution/tickoni.md`: log with useful identifiers, then
+  `doc/execution/contribution/yamori.md`: log with useful identifiers, then
   rethrow or translate at the correct boundary instead of swallowing it.
 
 ### Don't Trust User Input
@@ -118,7 +118,7 @@ checks a contributor or reviewer can apply line by line.
 
 ### Static, Preallocated Memory (Critical-Systems Discipline)
 
-Tickoni follows the same discipline Firedancer already applies to the
+Yamori follows the same discipline proven in high-performance systems for the
 ultra-TPS event path, and the same discipline critical/industrial systems
 (avionics, control systems) apply to memory: capacity is a build- or
 config-time property, proven by construction. A memory or stack overflow must
@@ -168,11 +168,11 @@ No-nos:
 
 ### C/Zig Memory And Stack Safety
 
-Tickoni mixes Zig runtime code with retained Firedancer C substrate. Memory
+Yamori mixes Zig runtime code with retained C substrate. Memory
 and stack bugs at that boundary are security bugs, not just correctness bugs,
 because they run in a process handling financial events. See
-[Memory And Allocation](contribution/tickoni.md) and
-[C ABI Rules](contribution/tickoni.md) for the general style rules this
+[Memory And Allocation](contribution/yamori.md) and
+[C ABI Rules](contribution/yamori.md) for the general style rules this
 section restates with a security lens.
 
 Best practices:
@@ -217,7 +217,7 @@ No-nos:
 - Do not disable, weaken, or work around stack protection, ASan/UBSan, or
   Zig's runtime safety checks (bounds, overflow, alignment) to make code build
   or pass tests faster; fix the underlying bug instead, per the existing
-  no-bypass rule in `contribution/tickoni.md`.
+  no-bypass rule in `contribution/yamori.md`.
 - Do not introduce hidden allocation inside parse/hash/enqueue helpers or
   unbounded growth (`ArrayList` growth, recursive buffers) in a steady-state
   or hot path — both hide the capacity limit a reviewer needs to reason about
@@ -228,7 +228,7 @@ No-nos:
 
 ## Isolation Boundary
 
-Tickoni follows Firedancer's process-oriented isolation principles. The Phase 0
+Yamori follows process-oriented isolation principles. The Phase 0
 implementation still runs tiles as in-process Zig threads for spike and test
 simplicity, but the architecture remains tile-shaped:
 
@@ -288,13 +288,13 @@ Gitleaks:
 
 - `security-gitleaks-check-fd` scans `src/` with
   `contrib/security/gitleaks-fd.toml`
-- `security-gitleaks-check-tk` scans `src/tickoni` and `src/app/tickoni`
+- `security-gitleaks-check-tk` scans `src/yamori` and `src/app/yamori`
 
 CodeQL:
 
 - the `just` CodeQL recipes are currently no-ops
 - `security-codeql-check-fd` documents the blocked local path and points at the
-  open Firedancer issue in the `justfile`
+  open upstream issue in the `justfile`
 - the real implementation remains in `contrib/security/security.sh codeql-check-fd`
   for when that path is re-enabled
 
@@ -302,7 +302,7 @@ Seccomp:
 
 - `security-seccomp-check-fd` is currently a no-op in the `justfile`
 - the real script command is `contrib/security/security.sh seccomp-check-fd`
-- Tickoni-owned Zig code has no active seccomp policy checker yet
+- Yamori-owned Zig code has no active seccomp policy checker yet
 
 Proof:
 
@@ -312,8 +312,8 @@ Proof:
 
 Sanitizers:
 
-- `security-sanitize-check-fd` builds and checks the Firedancer-derived
-  `tickoni` target with Clang ASan + UBSan in `build/clang-asan-ubsan`
+- `security-sanitize-check-fd` builds and checks the C substrate
+  `yamori` target with Clang ASan + UBSan in `build/clang-asan-ubsan`
 - `security-sanitize-check-tk` runs `zig build test -Doptimize=ReleaseSafe`
 
 ## Local Expectations
@@ -363,6 +363,6 @@ denied:
 ## Related Docs
 
 - [Development](development.md)
-- [Tickoni Testing](testing-tickoni.md)
+- [Yamori Testing](testing-yamori.md)
 - [Observability](observability.md)
-- [Contribution Guide](contribution/tickoni.md)
+- [Contribution Guide](contribution/yamori.md)
