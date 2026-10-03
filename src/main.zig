@@ -560,9 +560,12 @@ pub const dependencyResolver = struct {
         var in_degree = std.StringHashMap(usize).init(alloc);
 
         var all_names: std.ArrayListUnmanaged([]const u8) = .empty;
+        var all_names_freed: bool = false;
         errdefer {
-            for (all_names.items) |n| alloc.free(n);
-            all_names.deinit(alloc);
+            if (!all_names_freed) {
+                for (all_names.items) |n| alloc.free(n);
+                all_names.deinit(alloc);
+            }
         }
 
         var it = registry.formulas.iterator();
@@ -584,12 +587,19 @@ pub const dependencyResolver = struct {
             }
         }
 
-        // Compute in-degrees from dep_list.
+        // Compute in-degrees from dep_list, only counting sources that are
+        // formulas in the registry (external leaf metrics are ignored).
         var dep_it = dep_list.iterator();
         while (dep_it.next()) |entry| {
             const name = entry.key_ptr.*;
             const deps = entry.value_ptr.*;
-            (in_degree.put(name, deps.len)) catch return ResolveError.AllocationFailed;
+            var in_deg: usize = 0;
+            for (deps) |dep| {
+                if (registry.formulas.contains(dep)) {
+                    in_deg += 1;
+                }
+            }
+            (in_degree.put(name, in_deg)) catch return ResolveError.AllocationFailed;
         }
 
         // Kahn's algorithm with sorted zero-in-degree queue for determinism.
@@ -673,13 +683,14 @@ pub const dependencyResolver = struct {
 
         // If result doesn't include all names, there's a cycle (S3 will handle).
         if (result.items.len != all_names.items.len) {
-            // Cleanup all_names (result items are a subset of all_names).
+            all_names_freed = true;
             for (all_names.items) |n| alloc.free(n);
             all_names.deinit(alloc);
             return ResolveError.IncompleteRegistry;
         }
 
         // On success, result has its own copies (via queue). Free all_names items.
+        all_names_freed = true;
         for (all_names.items) |n| alloc.free(n);
         all_names.deinit(alloc);
         // Deinit queue (items already moved to result).
@@ -767,6 +778,7 @@ pub const arrowAdapter = struct {
         output_array: [*c]ArrowArray,
         data: []f64,  // The actual f64 data for test access
         allocator: std.mem.Allocator,
+        buffers_holder: ?[]u64, // [0]=null bitmap ptr, [1]=data ptr (owned)
     };
 
     /// Free an ArrowComputeResult
@@ -774,6 +786,10 @@ pub const arrowAdapter = struct {
         const alloc = result.allocator;
         // Free the data buffer
         alloc.free(result.data);
+        // Free the buffers holder if allocated
+        if (result.buffers_holder) |bufs| {
+            alloc.free(bufs);
+        }
         // Free the ArrowArray struct itself — cast unbounded pointer back to single-item
         const ptr: *arrowAdapter.ArrowArray = @ptrFromInt(@intFromPtr(result.output_array));
         alloc.destroy(ptr);
@@ -791,7 +807,7 @@ pub const arrowAdapter = struct {
 
     /// Validate that all ArrowArrays have float64 data buffers (non-null).
     /// Format validation would require ArrowSchema which is not carried on the array.
-    pub fn validateFloat64Arrays(_operands: []const [*c]ArrowArray) AdapterError!void {
+    pub fn validateFloat64Arrays(_operands: []const *ArrowArray) AdapterError!void {
         for (_operands) |arr| {
             // Check that buffers pointer is non-null (required for data access)
             if (arr.*.buffers == null) return AdapterError.TypeMismatch;
@@ -805,7 +821,7 @@ pub const arrowAdapter = struct {
     ///   buffers[1] = float64 data
     pub fn executeOperation(
         op_name: []const u8,
-        operands: []const [*c]ArrowArray,
+        operands: []const *ArrowArray,
         allocator: std.mem.Allocator,
     ) AdapterError!ArrowComputeResult {
         try validateFloat64Arrays(operands);
@@ -859,13 +875,24 @@ pub const arrowAdapter = struct {
 
         // Build output ArrowArray
         const out_arr = allocator.create(ArrowArray) catch return AdapterError.AllocationFailed;
+        
+        // Allocate proper buffers array: [0] = null bitmap ptr, [1] = data ptr
+        const buffers_holder = allocator.alloc(u64, 2) catch {
+            allocator.destroy(out_arr);
+            return AdapterError.AllocationFailed;
+        };
+        buffers_holder[0] = 0; // no validity bitmap
+        buffers_holder[1] = @intFromPtr(out_alloc.ptr); // data buffer
+        
+        const buf_ptr: [*c]*const void = @ptrCast(buffers_holder.ptr);
+        
         out_arr.* = ArrowArray{
             .length = len,
             .null_count = 0,
             .offset = 0,
             .n_buffers = 1,
             .n_children = 0,
-            .buffers = @ptrCast(&out_alloc[0]),
+            .buffers = buf_ptr,
             .children = null,
             .dictionary = null,
             .release = null,
@@ -876,13 +903,14 @@ pub const arrowAdapter = struct {
             .output_array = out_arr,
             .data = out_alloc,
             .allocator = allocator,
+            .buffers_holder = buffers_holder,
         };
     }
 
     /// Resolve a Yamori operation name to Arrow function name, then execute
     pub fn resolveAndExecute(
         yamori_op: []const u8,
-        operands: []const [*c]ArrowArray,
+        operands: []const *ArrowArray,
         allocator: std.mem.Allocator,
     ) AdapterError!ArrowComputeResult {
         const arrow_func = try resolveArrowFunc(yamori_op);
@@ -1513,7 +1541,7 @@ test "arrow_adapter: executeOperation(empty_operands → TypeMismatch" {
     defer allocator.free(arr_b.format_buf);
 
     // Pass 0 operands (empty slice with correct type)
-    const empty_operands: []const [*c]arrowAdapter.ArrowArray = &.{};
+    const empty_operands: []const *arrowAdapter.ArrowArray = &.{};
     const result = arrowAdapter.executeOperation("add", empty_operands, allocator);
     try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
@@ -1780,3 +1808,1109 @@ test "arrow_adapter: ArrowArray extern struct has reasonable size" {
     try expect(sz == 80);
     try expect(@alignOf(arrowAdapter.ArrowArray) == 8);
 }
+
+// ─── V1.1.S5: runValuation() Graph Traversal ────────────────────────────
+
+/// ResultFrame: formula name → computed Arrow array, data slice, and buffers holder.
+/// The ArrowArray structs, their data buffers, and buffers_holder arrays are owned by the frame.
+pub const ResultFrame = struct {
+    results: std.StringHashMap(*arrowAdapter.ArrowArray),
+    result_data: std.StringHashMap([]f64),
+    buffers_holders: std.StringHashMap(?[]u64),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) ResultFrame {
+        return ResultFrame{
+            .results = std.StringHashMap(*arrowAdapter.ArrowArray).init(allocator),
+            .result_data = std.StringHashMap([]f64).init(allocator),
+            .buffers_holders = std.StringHashMap(?[]u64).init(allocator),
+            .allocator = allocator,
+        };
+    }
+};
+
+/// ValuationInput: registry + source leaf metric values (name → ArrowArray).
+/// The source arrays are owned by the caller; the frame stores pointers to them.
+pub const ValuationInput = struct {
+    registry: *const formula.FormulaRegistry,
+    source_data: std.StringHashMap(*arrowAdapter.ArrowArray),
+    allocator: std.mem.Allocator,
+};
+
+/// ValuationError: all error classes S5 may surface.
+pub const ValuationError = error{
+    UndefinedOperation,
+    TypeMismatch,
+    CycleDetected,
+    CyclePath,
+    RegistryError,
+    ResolveError,
+    ArrowError,
+    AllocationFailed,
+    NotFound,
+};
+
+/// Free a ResultFrame — frees all ArrowArray structs, their data buffers, and buffers_holder arrays.
+pub fn resultFrameFree(frame: *ResultFrame) void {
+    const alloc = frame.allocator;
+    var it = frame.results.iterator();
+    while (it.next()) |entry| {
+        alloc.destroy(entry.value_ptr.*);
+    }
+    frame.results.deinit();
+
+    var dit = frame.result_data.iterator();
+    while (dit.next()) |entry| {
+        alloc.free(entry.value_ptr.*);
+    }
+    frame.result_data.deinit();
+
+    var bit = frame.buffers_holders.iterator();
+    while (bit.next()) |entry| {
+        if (entry.value_ptr.*) |bufs| {
+            alloc.free(bufs);
+        }
+    }
+    frame.buffers_holders.deinit();
+}
+
+/// Main valuation runner: traverse graph in topological order, execute each
+/// formula via the Arrow adapter, collect results into ResultFrame.
+/// Fail-closed: any error frees all prior results and returns the error.
+/// Returns a heap-allocated *ResultFrame to avoid StringHashMap copy-on-return.
+pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
+    const alloc = input.allocator;
+    const frame = alloc.create(ResultFrame) catch return ValuationError.AllocationFailed;
+    frame.* = ResultFrame.init(alloc);
+    errdefer {
+        resultFrameFree(frame);
+        alloc.destroy(frame);
+    }
+
+    // Step 1: resolve dependencies to get topological order
+    var resolver = dependencyResolver.DependencyResolver.init(alloc);
+    const resolve_result = dependencyResolver.resolveDependencies(&resolver, input.registry)
+        catch |err| {
+        switch (err) {
+            dependencyResolver.ResolveError.AllocationFailed => return ValuationError.AllocationFailed,
+            dependencyResolver.ResolveError.IncompleteRegistry => return ValuationError.ResolveError,
+        }
+    };
+    defer dependencyResolver.resolveResultFree(resolve_result);
+
+    // Step 2: iterate in topological order
+    var i: usize = 0;
+    while (i < resolve_result.ordered_names.len) : (i += 1) {
+        const name = resolve_result.ordered_names[i];
+
+        // Lookup formula in registry
+        const nf = input.registry.formulas.get(name) orelse return ValuationError.NotFound;
+
+        // Gather operands from source_data or prior results
+        var operand_ptrs: std.ArrayListUnmanaged(*arrowAdapter.ArrowArray) = .empty;
+        errdefer operand_ptrs.deinit(alloc);
+
+        var src_idx: usize = 0;
+        while (src_idx < nf.sources.len) : (src_idx += 1) {
+            const src_name = nf.sources[src_idx];
+
+            if (input.source_data.get(src_name)) |src_arr| {
+                // Source is a leaf metric — use directly (owned by caller)
+                operand_ptrs.append(alloc, src_arr) catch return ValuationError.AllocationFailed;
+            } else if (frame.results.get(src_name)) |cached_arr| {
+                // Source is a previously computed formula result
+                operand_ptrs.append(alloc, cached_arr) catch return ValuationError.AllocationFailed;
+            } else {
+                return ValuationError.NotFound;
+            }
+        }
+
+        if (operand_ptrs.items.len < 2) {
+            return ValuationError.TypeMismatch;
+        }
+
+        // Execute the operation
+        const c_operands: []const *arrowAdapter.ArrowArray = operand_ptrs.items;
+
+        const compute_result = arrowAdapter.executeOperation(
+            nf.operation,
+            c_operands,
+            alloc,
+        ) catch |err| {
+            switch (err) {
+                arrowAdapter.AdapterError.UndefinedOperation => return ValuationError.UndefinedOperation,
+                arrowAdapter.AdapterError.TypeMismatch => return ValuationError.TypeMismatch,
+                arrowAdapter.AdapterError.AllocationFailed => return ValuationError.AllocationFailed,
+            }
+        };
+
+        // Store result in frame: move ownership of ArrowArray struct and data.
+        // Do NOT call computeResultFree — we're taking the pieces into the frame.
+        // Cast [*c]ArrowArray to *ArrowArray (output_array is a heap-allocated single struct).
+        const result_arr_ptr: *arrowAdapter.ArrowArray = @ptrCast(compute_result.output_array);
+        
+        (frame.results.put(name, result_arr_ptr)) catch {
+            arrowAdapter.computeResultFree(compute_result);
+            return ValuationError.AllocationFailed;
+        };
+        (frame.result_data.put(name, compute_result.data)) catch {
+            return ValuationError.AllocationFailed;
+        };
+        (frame.buffers_holders.put(name, compute_result.buffers_holder)) catch {
+            return ValuationError.AllocationFailed;
+        };
+
+        operand_ptrs.deinit(alloc);
+    }
+
+    return frame;
+}
+
+// ─── V1.1.S5 Unit Tests ────────────────────────────────────────────────
+
+/// Helper: create an ArrowArray from an f64 slice for use as source data.
+/// Returns: { arr, data_buf, buffers_array }
+/// Caller must free all three.
+fn makeSourceArray(alloc: std.mem.Allocator, data: []const f64) !struct {
+    *arrowAdapter.ArrowArray,
+    []f64,
+    []u64,
+} {
+    const data_buf = try alloc.dupe(f64, data);
+    errdefer alloc.free(data_buf);
+
+    const buffers_array = try alloc.alloc(u64, 2);
+    errdefer alloc.free(buffers_array);
+    buffers_array[0] = 0;
+    buffers_array[1] = @intFromPtr(data_buf.ptr);
+
+    const buf_ptr: [*c]*const void = @ptrCast(buffers_array.ptr);
+
+    const arr = try alloc.create(arrowAdapter.ArrowArray);
+    errdefer alloc.free(buffers_array);
+    errdefer alloc.destroy(arr);
+
+    arr.* = arrowAdapter.ArrowArray{
+        .length = @intCast(data.len),
+        .null_count = 0,
+        .offset = 0,
+        .n_buffers = 1,
+        .n_children = 0,
+        .buffers = buf_ptr,
+        .children = null,
+        .dictionary = null,
+        .release = null,
+        .private_data = null,
+    };
+
+    return .{ arr, data_buf, buffers_array };
+}
+
+/// Helper: create an ArrowArray with null buffers (for type-mismatch testing).
+fn makeNullArray(alloc: std.mem.Allocator) !*arrowAdapter.ArrowArray {
+    const arr = try alloc.create(arrowAdapter.ArrowArray);
+    arr.* = arrowAdapter.ArrowArray{
+        .length = 3,
+        .null_count = 0,
+        .offset = 0,
+        .n_buffers = 1,
+        .n_children = 0,
+        .buffers = null,
+        .children = null,
+        .dictionary = null,
+        .release = null,
+        .private_data = null,
+    };
+    return arr;
+}
+
+/// Helper: assert that two f64 slices are approximately equal.
+fn expectApprox(a: []const f64, b: []const f64) !void {
+    try expectEqual(a.len, b.len);
+    var i: usize = 0;
+    while (i < a.len) : (i += 1) {
+        try expect(@abs(a[i] - b[i]) < 1e-9);
+    }
+}
+
+// 1. linear_chain_execution: B depends on source A (A→B), source data for A
+test "runValuation: linear_chain_execution A→B" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "B", .sources = &.{ "A", "A" }, .operation = "add",
+    });
+
+    // Source: A = [1, 2, 3]
+    const a_src = try makeSourceArray(alloc, &[_]f64{ 1, 2, 3 });
+    // Do NOT free yet — keep alive through runValuation
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("A", a_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    var frame = try runValuation(input);
+    defer resultFrameFree(frame);
+
+    // Now free source arrays
+    alloc.free(a_src[1]);
+    alloc.free(a_src[2]);
+    alloc.destroy(a_src[0]);
+
+    try expectEqual(1, frame.results.count());
+    try expect(frame.results.contains("B"));
+    try expectApprox(frame.result_data.get("B").?, &[_]f64{ 2, 4, 6 });
+}
+
+// 2. single_formula_no_deps: one formula whose sources are all leaf metrics
+test "runValuation: single_formula_no_deps" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "X", .sources = &.{ "SA", "SB" }, .operation = "multiply",
+    });
+
+    const sa_src = try makeSourceArray(alloc, &[_]f64{ 1, 2, 3 });
+    const sb_src = try makeSourceArray(alloc, &[_]f64{ 4, 5, 6 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("SA", sa_src[0]);
+    try source_map.put("SB", sb_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    var frame = try runValuation(input);
+    defer resultFrameFree(frame);
+
+    alloc.free(sa_src[1]);
+    alloc.free(sa_src[2]);
+    alloc.destroy(sa_src[0]);
+    alloc.free(sb_src[1]);
+    alloc.free(sb_src[2]);
+    alloc.destroy(sb_src[0]);
+
+    try expectEqual(1, frame.results.count());
+    try expectApprox(frame.result_data.get("X").?, &[_]f64{ 4, 10, 18 });
+}
+
+// 3. independent_formulas: two formulas, no deps between them
+test "runValuation: independent_formulas" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "X", .sources = &.{ "XA", "XB" }, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "Y", .sources = &.{ "YA", "YB" }, .operation = "divide",
+    });
+
+    const xa_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
+    const xb_src = try makeSourceArray(alloc, &[_]f64{ 3, 4 });
+    const ya_src = try makeSourceArray(alloc, &[_]f64{ 10, 20 });
+    const yb_src = try makeSourceArray(alloc, &[_]f64{ 5, 4 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("XA", xa_src[0]);
+    try source_map.put("XB", xb_src[0]);
+    try source_map.put("YA", ya_src[0]);
+    try source_map.put("YB", yb_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    var frame = try runValuation(input);
+    defer resultFrameFree(frame);
+
+    alloc.free(xa_src[1]);
+    alloc.free(xa_src[2]);
+    alloc.destroy(xa_src[0]);
+    alloc.free(xb_src[1]);
+    alloc.free(xb_src[2]);
+    alloc.destroy(xb_src[0]);
+    alloc.free(ya_src[1]);
+    alloc.free(ya_src[2]);
+    alloc.destroy(ya_src[0]);
+    alloc.free(yb_src[1]);
+    alloc.free(yb_src[2]);
+    alloc.destroy(yb_src[0]);
+
+    try expectEqual(2, frame.results.count());
+    try expectApprox(frame.result_data.get("X").?, &[_]f64{ 4, 6 });
+    try expectApprox(frame.result_data.get("Y").?, &[_]f64{ 2, 5 });
+}
+
+// 4. type_mismatch_error: non-float64 source array (null buffers)
+test "runValuation: type_mismatch_error" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "F", .sources = &.{ "BAD", "X" }, .operation = "add",
+    });
+
+    const bad_arr = try makeNullArray(alloc);
+    defer alloc.destroy(bad_arr);
+
+    const x_arr = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("BAD", bad_arr);
+    try source_map.put("X", x_arr[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    const result = runValuation(input);
+    try expect(result == ValuationError.TypeMismatch);
+
+    alloc.free(x_arr[1]);
+    alloc.free(x_arr[2]);
+    alloc.destroy(x_arr[0]);
+}
+
+// 5. undefined_operation_error: formula with unknown operation
+test "runValuation: undefined_operation_error" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "F", .sources = &.{ "A", "B" }, .operation = "foobar",
+    });
+
+    const a_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
+    const b_src = try makeSourceArray(alloc, &[_]f64{ 3, 4 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("A", a_src[0]);
+    try source_map.put("B", b_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    const result = runValuation(input);
+    try expect(result == ValuationError.UndefinedOperation);
+
+    alloc.free(a_src[1]);
+    alloc.free(a_src[2]);
+    alloc.destroy(a_src[0]);
+    alloc.free(b_src[1]);
+    alloc.free(b_src[2]);
+    alloc.destroy(b_src[0]);
+}
+
+// 6. diamond_execution: A→B, A→C, B→D, C→D
+test "runValuation: diamond_execution" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    // Diamond: A(source) → B(add), A(source) → C(multiply), B+C → D(subtract)
+    try formula.registryAdd(&registry, .{
+        .name = "B", .sources = &.{ "A", "A" }, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "C", .sources = &.{ "A", "A" }, .operation = "multiply",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "D", .sources = &.{ "B", "C" }, .operation = "subtract",
+    });
+
+    const a_src = try makeSourceArray(alloc, &[_]f64{ 2, 3 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("A", a_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    var frame = try runValuation(input);
+    defer resultFrameFree(frame);
+
+    alloc.free(a_src[1]);
+    alloc.free(a_src[2]);
+    alloc.destroy(a_src[0]);
+
+    try expectEqual(3, frame.results.count());
+    try expectApprox(frame.result_data.get("B").?, &[_]f64{ 4, 6 });
+    try expectApprox(frame.result_data.get("C").?, &[_]f64{ 4, 9 });
+    try expectApprox(frame.result_data.get("D").?, &[_]f64{ 0, -3 });
+}
+
+// 7. partial_dependency_resolution: B depends on A, A is source data
+test "runValuation: partial_dependency_resolution" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "B", .sources = &.{ "A", "A" }, .operation = "multiply",
+    });
+
+    const a_src = try makeSourceArray(alloc, &[_]f64{ 5, 10 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("A", a_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    var frame = try runValuation(input);
+    defer resultFrameFree(frame);
+
+    alloc.free(a_src[1]);
+    alloc.free(a_src[2]);
+    alloc.destroy(a_src[0]);
+
+    try expectApprox(frame.result_data.get("B").?, &[_]f64{ 25, 100 });
+}
+
+// 8. multiple_sources_for_one_formula: C depends on A and B (both sources)
+test "runValuation: multiple_sources_for_one_formula" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "C", .sources = &.{ "A", "B" }, .operation = "divide",
+    });
+
+    const a_src = try makeSourceArray(alloc, &[_]f64{ 10, 20 });
+    const b_src = try makeSourceArray(alloc, &[_]f64{ 2, 4 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("A", a_src[0]);
+    try source_map.put("B", b_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    var frame = try runValuation(input);
+    defer resultFrameFree(frame);
+
+    alloc.free(a_src[1]);
+    alloc.free(a_src[2]);
+    alloc.destroy(a_src[0]);
+    alloc.free(b_src[1]);
+    alloc.free(b_src[2]);
+    alloc.destroy(b_src[0]);
+
+    try expectApprox(frame.result_data.get("C").?, &[_]f64{ 5, 5 });
+}
+
+// 9. fail_closed_on_error: one formula has undefined op → entire run fails
+test "runValuation: fail_closed_on_error" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "F1", .sources = &.{ "X", "Y" }, .operation = "foobar",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "F2", .sources = &.{ "X", "Y" }, .operation = "add",
+    });
+
+    const x_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
+    const y_src = try makeSourceArray(alloc, &[_]f64{ 3, 4 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("X", x_src[0]);
+    try source_map.put("Y", y_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    const result = runValuation(input);
+    try expect(result == ValuationError.UndefinedOperation);
+
+    alloc.free(x_src[1]);
+    alloc.free(x_src[2]);
+    alloc.destroy(x_src[0]);
+    alloc.free(y_src[1]);
+    alloc.free(y_src[2]);
+    alloc.destroy(y_src[0]);
+}
+
+// 10. complex_chain: 5-formula chain ROIC→STLA→EV→EBITDA→EV_EBITDA
+test "runValuation: complex_chain" {
+    const alloc = std.testing.allocator;
+
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+    try formula.registryAdd(&registry, .{
+        .name = "ROIC", .sources = &.{ "R", "I" }, .operation = "divide",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "STLA", .sources = &.{ "ROIC", "ONE" }, .operation = "multiply",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "EV", .sources = &.{ "STLA", "M" }, .operation = "multiply",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "EBITDA", .sources = &.{ "EV", "D" }, .operation = "subtract",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "EV_EBITDA", .sources = &.{ "EBITDA", "EV" }, .operation = "divide",
+    });
+
+    const r_src = try makeSourceArray(alloc, &[_]f64{ 100, 200 });
+    const i_src = try makeSourceArray(alloc, &[_]f64{ 10, 20 });
+    const one_src = try makeSourceArray(alloc, &[_]f64{ 1, 1 });
+    const m_src = try makeSourceArray(alloc, &[_]f64{ 5, 5 });
+    const d_src = try makeSourceArray(alloc, &[_]f64{ 2, 2 });
+
+    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
+    defer source_map.deinit();
+    try source_map.put("R", r_src[0]);
+    try source_map.put("I", i_src[0]);
+    try source_map.put("ONE", one_src[0]);
+    try source_map.put("M", m_src[0]);
+    try source_map.put("D", d_src[0]);
+
+    const input = ValuationInput{
+        .registry = &registry,
+        .source_data = source_map,
+        .allocator = alloc,
+    };
+
+    var frame = try runValuation(input);
+    defer resultFrameFree(frame);
+
+    // Free all source arrays after runValuation completes
+    alloc.free(r_src[1]); alloc.free(r_src[2]); alloc.destroy(r_src[0]);
+    alloc.free(i_src[1]); alloc.free(i_src[2]); alloc.destroy(i_src[0]);
+    alloc.free(one_src[1]); alloc.free(one_src[2]); alloc.destroy(one_src[0]);
+    alloc.free(m_src[1]); alloc.free(m_src[2]); alloc.destroy(m_src[0]);
+    alloc.free(d_src[1]); alloc.free(d_src[2]); alloc.destroy(d_src[0]);
+
+    try expectEqual(5, frame.results.count());
+    try expectApprox(frame.result_data.get("ROIC").?, &[_]f64{ 10, 10 });
+    try expectApprox(frame.result_data.get("STLA").?, &[_]f64{ 10, 10 });
+    try expectApprox(frame.result_data.get("EV").?, &[_]f64{ 50, 50 });
+    try expectApprox(frame.result_data.get("EBITDA").?, &[_]f64{ 48, 48 });
+    try expectApprox(frame.result_data.get("EV_EBITDA").?, &[_]f64{ 0.96, 0.96 });
+}
+
+// ─── V1.1.S7: Provenance — Audit Trail for Every Computed Metric ────────
+
+/// Provenance: audit trail for a single computed metric.
+/// chain is ordered leaf-to-formula: e.g. [NOPAT, InvestedCapital, ROIC]
+pub const Provenance = struct {
+    name: []const u8,
+    sources: []const []const u8,
+    operation: []const u8,
+    chain: std.ArrayListUnmanaged([]const u8),
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *Provenance) void {
+        const alloc = self.allocator;
+        alloc.free(self.name);
+        for (self.sources) |s| alloc.free(s);
+        alloc.free(self.sources);
+        alloc.free(self.operation);
+        for (self.chain.items) |item| alloc.free(item);
+        self.chain.deinit(alloc);
+    }
+};
+
+pub const ProvenanceError = error{
+    NotFound,
+    AllocationFailed,
+};
+
+/// Build provenance for a single formula by traversing the dependency graph
+/// from the formula backward to all leaf sources via BFS.
+/// Returns chain in leaf-to-formula order.
+pub fn attachProvenance(
+    formula_name: []const u8,
+    registry: *const formula.FormulaRegistry,
+    allocator: std.mem.Allocator,
+) ProvenanceError!Provenance {
+    // Look up formula
+    const nf = registry.formulas.get(formula_name) orelse return ProvenanceError.NotFound;
+
+    const name_copy = (allocator.dupe(u8, formula_name)) catch return ProvenanceError.AllocationFailed;
+    const op_copy = (allocator.dupe(u8, nf.operation)) catch return ProvenanceError.AllocationFailed;
+    const sources = (allocator.dupe([]const u8, nf.sources)) catch return ProvenanceError.AllocationFailed;
+    var i: usize = 0;
+    while (i < sources.len) : (i += 1) {
+        sources[i] = (allocator.dupe(u8, nf.sources[i])) catch return ProvenanceError.AllocationFailed;
+    }
+
+    // Build chain: topological order of all formulas reachable from target,
+    // plus data keys that are sources of those formulas (except target's direct data-key sources).
+    // Use the dependency resolver for topo ordering of formulas.
+    var resolver = dependencyResolver.DependencyResolver.init(allocator);
+    const topo_result = dependencyResolver.resolveDependencies(&resolver, registry)
+        catch return ProvenanceError.AllocationFailed;
+    defer dependencyResolver.resolveResultFree(topo_result);
+
+    // BFS from target to find all reachable formulas and their data-key sources.
+    var visited: std.StringHashMap(void) = .init(allocator);
+    errdefer visited.deinit();
+
+    var queue: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (queue.items) |item| allocator.free(item);
+        queue.deinit(allocator);
+    }
+
+    const target_push = (allocator.dupe(u8, formula_name)) catch return ProvenanceError.AllocationFailed;
+    (visited.put(target_push, {})) catch return ProvenanceError.AllocationFailed;
+    (queue.append(allocator, target_push)) catch return ProvenanceError.AllocationFailed;
+
+    var qi: usize = 0;
+    while (qi < queue.items.len) {
+        const current = queue.items[qi];
+        qi += 1;
+
+        if (registry.formulas.get(current)) |nf| {
+            for (nf.sources) |src| {
+                if (visited.get(src) == null) {
+                    const src_copy = (allocator.dupe(u8, src)) catch return ProvenanceError.AllocationFailed;
+                    (visited.put(src_copy, {})) catch return ProvenanceError.AllocationFailed;
+                    (queue.append(allocator, src_copy)) catch return ProvenanceError.AllocationFailed;
+                }
+            }
+        }
+    }
+
+    // Build chain: include all visited nodes in topo order.
+    // For each topo-ordered formula, add it if visited.
+    // For data keys (not formulas), add them in their definition order.
+    var chain = std.ArrayListUnmanaged([]const u8).empty;
+    errdefer {
+        for (chain.items) |item| allocator.free(item);
+        chain.deinit(allocator);
+    }
+
+    // First add all data keys that are sources of visited formulas, in definition order.
+    for (registry.data_keys) |key| {
+        if (visited.get(key) != null) {
+            const key_copy = (allocator.dupe(u8, key)) catch return ProvenanceError.AllocationFailed;
+            (chain.append(allocator, key_copy)) catch return ProvenanceError.AllocationFailed;
+        }
+    }
+
+    // Then add all visited formulas in topo order.
+    for (topo_result.ordered_names) |name| {
+        if (visited.get(name) != null) {
+            const name_copy = (allocator.dupe(u8, name)) catch return ProvenanceError.AllocationFailed;
+            (chain.append(allocator, name_copy)) catch return ProvenanceError.AllocationFailed;
+        }
+    }
+
+    return Provenance{
+        .name = name_copy,
+        .sources = sources,
+        .operation = op_copy,
+        .chain = chain,
+        .allocator = allocator,
+    };
+}
+
+/// ResultFrameWithProvenance: formula name → computed Arrow array + provenance.
+pub const ResultFrameWithProvenance = struct {
+    results: std.StringHashMap(*arrowAdapter.ArrowArray),
+    provenance: std.StringHashMap(Provenance),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) ResultFrameWithProvenance {
+        return ResultFrameWithProvenance{
+            .results = std.StringHashMap(*arrowAdapter.ArrowArray).init(allocator),
+            .provenance = std.StringHashMap(Provenance).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ResultFrameWithProvenance) void {
+        const alloc = self.allocator;
+        var it = self.results.iterator();
+        while (it.next()) |entry| {
+            alloc.destroy(entry.value_ptr.*);
+        }
+        self.results.deinit();
+
+        var pit = self.provenance.iterator();
+        while (pit.next()) |entry| @as(*Provenance, @ptrCast(entry.value_ptr)).deinit();
+        self.provenance.deinit();
+    }
+};
+
+/// Build provenance for all formulas in a result frame.
+/// Only populates the provenance map; results are owned by the frame.
+pub fn buildAllProvenance(
+    frame: *const ResultFrame,
+    registry: *const formula.FormulaRegistry,
+    allocator: std.mem.Allocator,
+) ProvenanceError!ResultFrameWithProvenance {
+    var result = ResultFrameWithProvenance.init(allocator);
+    errdefer {
+        var pit = result.provenance.iterator();
+        while (pit.next()) |entry| @as(*Provenance, @ptrCast(entry.value_ptr)).deinit();
+        result.provenance.deinit();
+    }
+
+    var it = frame.results.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const prov = try attachProvenance(name, registry, allocator);
+        const prov_name_copy = (allocator.dupe(u8, prov.name)) catch return ProvenanceError.AllocationFailed;
+        (result.provenance.put(prov_name_copy, prov)) catch {
+            allocator.free(prov_name_copy);
+            return ProvenanceError.AllocationFailed;
+        };
+    }
+
+    return result;
+}
+
+/// Query provenance for a specific formula by name.
+pub fn queryProvenance(
+    formula_name: []const u8,
+    provenance_map: *const std.StringHashMap(Provenance),
+) ?Provenance {
+    return provenance_map.get(formula_name);
+}
+
+/// Free a single Provenance (call via iterator in deinit).
+pub fn provenanceFree(prov: *Provenance) void {
+    prov.deinit();
+}
+
+// ─── V1.1.S7 Unit Tests ────────────────────────────────────────────────
+
+test "provenance: single_formula_provenance ROIC = NOPAT / InvestedCapital" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "ROIC",
+        .sources = &.{ "NOPAT", "InvestedCapital" },
+        .operation = "divide",
+    });
+
+    var prov = try attachProvenance("ROIC", &registry, alloc);
+    defer prov.deinit();
+
+    try expectEqualStrings("ROIC", prov.name);
+    try expectEqualStrings("divide", prov.operation);
+    try expectEqual(2, prov.sources.len);
+    try expectEqual(3, prov.chain.items.len);
+    try expectEqualStrings("NOPAT", prov.chain.items[0]);
+    try expectEqualStrings("InvestedCapital", prov.chain.items[1]);
+    try expectEqualStrings("ROIC", prov.chain.items[2]);
+}
+
+test "provenance: chain_provenance A→B→C" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "A", .sources = &.{}, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "B", .sources = &.{ "A" }, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "C", .sources = &.{ "B" }, .operation = "multiply",
+    });
+
+    var prov = try attachProvenance("C", &registry, alloc);
+    defer prov.deinit();
+
+    try expectEqualStrings("C", prov.name);
+    try expectEqual(3, prov.chain.items.len);
+    try expectEqualStrings("A", prov.chain.items[0]);
+    try expectEqualStrings("B", prov.chain.items[1]);
+    try expectEqualStrings("C", prov.chain.items[2]);
+}
+
+test "provenance: leaf_metric_provenance Revenue (no sources)" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "Revenue", .sources = &.{}, .operation = "add",
+    });
+
+    var prov = try attachProvenance("Revenue", &registry, alloc);
+    defer prov.deinit();
+
+    try expectEqualStrings("Revenue", prov.name);
+    try expectEqual(0, prov.sources.len);
+    try expectEqual(1, prov.chain.items.len);
+    try expectEqualStrings("Revenue", prov.chain.items[0]);
+}
+
+test "provenance: diamond_provenance A→B, A→C, B→D, C→D" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "A", .sources = &.{}, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "B", .sources = &.{ "A" }, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "C", .sources = &.{ "A" }, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "D", .sources = &.{ "B", "C" }, .operation = "subtract",
+    });
+
+    var prov = try attachProvenance("D", &registry, alloc);
+    defer prov.deinit();
+
+    try expectEqualStrings("D", prov.name);
+    // D's chain must include A, B, C, D in leaf-to-formula order
+    try expectEqual(4, prov.chain.items.len);
+    try expectEqualStrings("A", prov.chain.items[0]);
+    try expectEqualStrings("D", prov.chain.items[3]);
+    // B and C can be in either order
+    try expect(std.mem.eql(u8, "B", prov.chain.items[1]) or std.mem.eql(u8, "B", prov.chain.items[2]));
+    try expect(std.mem.eql(u8, "C", prov.chain.items[1]) or std.mem.eql(u8, "C", prov.chain.items[2]));
+}
+
+test "provenance: re_evaluation_invariance" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "A", .sources = &.{}, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "B", .sources = &.{ "A" }, .operation = "multiply",
+    });
+
+    var prov1 = try attachProvenance("B", &registry, alloc);
+    defer prov1.deinit();
+
+    // Re-evaluate: attachProvenance is structural, result must be identical
+    var prov2 = try attachProvenance("B", &registry, alloc);
+    defer prov2.deinit();
+
+    try expectEqualStrings(prov1.name, prov2.name);
+    try expectEqualStrings(prov1.operation, prov2.operation);
+    try expectEqual(prov1.chain.items.len, prov2.chain.items.len);
+    var i: usize = 0;
+    while (i < prov1.chain.items.len) : (i += 1) {
+        try expectEqualStrings(prov1.chain.items[i], prov2.chain.items[i]);
+    }
+}
+
+test "provenance: complex_chain_provenance ROIC→STLA→EV→EBITDA→EV_EBITDA" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "ROIC", .sources = &.{ "R", "I" }, .operation = "divide",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "STLA", .sources = &.{ "ROIC", "ONE" }, .operation = "multiply",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "EV", .sources = &.{ "STLA", "M" }, .operation = "multiply",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "EBITDA", .sources = &.{ "EV", "D" }, .operation = "subtract",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "EV_EBITDA", .sources = &.{ "EBITDA", "EV" }, .operation = "divide",
+    });
+
+    var prov = try attachProvenance("EV_EBITDA", &registry, alloc);
+    defer prov.deinit();
+
+    try expectEqualStrings("EV_EBITDA", prov.name);
+    // Chain: R, I, ONE, M, D (leaves) → ROIC, STLA, EV, EBITDA (intermediates) → EV_EBITDA (target)
+    try expectEqual(9, prov.chain.items.len);
+    try expectEqualStrings("EV_EBITDA", prov.chain.items[8]);
+}
+
+test "provenance: query_provenance_by_name" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "X", .sources = &.{ "A", "B" }, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "Y", .sources = &.{ "X" }, .operation = "multiply",
+    });
+
+    var provenance_map = std.StringHashMap(Provenance).init(alloc);
+
+    const prov_x = try attachProvenance("X", &registry, alloc);
+    const prov_x_name = try alloc.dupe(u8, prov_x.name);
+    try provenance_map.put(prov_x_name, prov_x);
+
+    const prov_y = try attachProvenance("Y", &registry, alloc);
+    const prov_y_name = try alloc.dupe(u8, prov_y.name);
+    try provenance_map.put(prov_y_name, prov_y);
+
+    const found = queryProvenance("X", &provenance_map);
+    try expect(found != null);
+    try expectEqualStrings("X", found.?.name);
+    try expectEqualStrings("add", found.?.operation);
+
+    // Map owns the provenance values and key copies — deinit to free everything
+    provenance_map.deinit();
+}
+
+test "provenance: query_nonexistent_provenance" {
+    const alloc = std.testing.allocator;
+    var provenance_map = std.StringHashMap(Provenance).init(alloc);
+    defer provenance_map.deinit();
+
+    const found = queryProvenance("Ghost", &provenance_map);
+    try expect(found == null);
+}
+
+test "provenance: all_provenance_built" {
+    const alloc = std.testing.allocator;
+    var registry = try formula.registryInit(alloc);
+    defer formula.registryDeinit(&registry);
+
+    try formula.registryAdd(&registry, .{
+        .name = "A", .sources = &.{}, .operation = "add",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "B", .sources = &.{ "A" }, .operation = "multiply",
+    });
+    try formula.registryAdd(&registry, .{
+        .name = "C", .sources = &.{ "B" }, .operation = "divide",
+    });
+
+    // Create a minimal frame with 3 entries (A, B, C)
+    var frame = ResultFrame.init(alloc);
+    errdefer resultFrameFree(&frame);
+
+    // Populate frame with mock result data for A, B, C
+    const a_data = try alloc.alloc(f64, 1);
+    a_data[0] = 1.0;
+    const a_buffers = try alloc.alloc(u64, 2);
+    a_buffers[0] = 0;
+    a_buffers[1] = @intFromPtr(a_data.ptr);
+    const a_arr = try alloc.create(arrowAdapter.ArrowArray);
+    a_arr.* = arrowAdapter.ArrowArray{
+        .length = 1, .null_count = 0, .offset = 0, .n_buffers = 1,
+        .n_children = 0, .buffers = @ptrCast(a_buffers.ptr),
+        .children = null, .dictionary = null, .release = null, .private_data = null,
+    };
+    try frame.results.put("A", a_arr);
+    try frame.result_data.put("A", a_data);
+    try frame.buffers_holders.put("A", a_buffers);
+
+    const b_data = try alloc.alloc(f64, 1);
+    b_data[0] = 2.0;
+    const b_buffers = try alloc.alloc(u64, 2);
+    b_buffers[0] = 0;
+    b_buffers[1] = @intFromPtr(b_data.ptr);
+    const b_arr = try alloc.create(arrowAdapter.ArrowArray);
+    b_arr.* = arrowAdapter.ArrowArray{
+        .length = 1, .null_count = 0, .offset = 0, .n_buffers = 1,
+        .n_children = 0, .buffers = @ptrCast(b_buffers.ptr),
+        .children = null, .dictionary = null, .release = null, .private_data = null,
+    };
+    try frame.results.put("B", b_arr);
+    try frame.result_data.put("B", b_data);
+    try frame.buffers_holders.put("B", b_buffers);
+
+    const c_data = try alloc.alloc(f64, 1);
+    c_data[0] = 3.0;
+    const c_buffers = try alloc.alloc(u64, 2);
+    c_buffers[0] = 0;
+    c_buffers[1] = @intFromPtr(c_data.ptr);
+    const c_arr = try alloc.create(arrowAdapter.ArrowArray);
+    c_arr.* = arrowAdapter.ArrowArray{
+        .length = 1, .null_count = 0, .offset = 0, .n_buffers = 1,
+        .n_children = 0, .buffers = @ptrCast(c_buffers.ptr),
+        .children = null, .dictionary = null, .release = null, .private_data = null,
+    };
+    try frame.results.put("C", c_arr);
+    try frame.result_data.put("C", c_data);
+    try frame.buffers_holders.put("C", c_buffers);
+
+    var result = try buildAllProvenance(&frame, &registry, alloc);
+    defer result.deinit();
+
+    try expectEqual(3, result.provenance.count());
+    try expect(result.provenance.contains("A"));
+    try expect(result.provenance.contains("B"));
+    try expect(result.provenance.contains("C"));
+
+    // Verify A's chain (leaf only)
+    const prov_a = result.provenance.get("A").?;
+    try expectEqual(1, prov_a.chain.items.len);
+    try expectEqualStrings("A", prov_a.chain.items[0]);
+
+    // Verify B's chain (A→B)
+    const prov_b = result.provenance.get("B").?;
+    try expectEqual(2, prov_b.chain.items.len);
+    try expectEqualStrings("A", prov_b.chain.items[0]);
+    try expectEqualStrings("B", prov_b.chain.items[1]);
+
+    // Verify C's chain (A→B→C)
+    const prov_c = result.provenance.get("C").?;
+    try expectEqual(3, prov_c.chain.items.len);
+    try expectEqualStrings("A", prov_c.chain.items[0]);
+    try expectEqualStrings("B", prov_c.chain.items[1]);
+    try expectEqualStrings("C", prov_c.chain.items[2]);
+}
+
