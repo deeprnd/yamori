@@ -6,6 +6,7 @@ justfile_dir := "."
 
 import "just/security.just"
 import "just/quality.just"
+import "just/test/unit.just"
 
 # ── Build ───────────────────────────────────────────────────────────────────
 
