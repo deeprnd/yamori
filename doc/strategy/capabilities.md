@@ -239,6 +239,8 @@ Yamori does not provide:
 - Portfolio management or position tracking (beyond analytics on portfolio inputs).
 - Any capability that leaks backend types through Yamori's public surface.
 
+Post-M4 additions (not part of the initial Damodaran scope): QuantLib (options/derivatives), Cuba (multidimensional integration), BLAS/LAPACK (portfolio analytics), TA-Lib (technical analysis), and FFTW (spectral analysis) are each introduced only when a domain requires capabilities the current backends do not provide. They are not part of M1–M4.
+
 ---
 
 ## The Moat

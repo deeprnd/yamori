@@ -175,6 +175,43 @@ All issue types use the same status enum:
 - Methodology decisions: [`doc/knowledge/architecture.md`](../../../knowledge/architecture.md).
 - Coding conventions: [`execution/contribution/yamori.md`](../../../execution/contribution/yamori.md).
 
+## Library Dependencies
+
+A new dependency enters Yamori only when a domain requires capabilities the current backends do not provide — not because the library happens to be useful.
+
+### Dependency Evolution Matrix
+
+| Library | M1 | M2 | M3 | M4 | Post-M4 | Rationale |
+|---------|---:|---:|---:|---:|--------:|-----------|
+| **Apache Arrow C++** | ✓ | ✓ | ✓ | ✓ | ✓ | Canonical memory, CSV I/O, compute, IPC. The backbone. |
+| **GNU GSL** | | ✓ | ✓ | ✓ | ✓ | Statistics, interpolation, roots, RNG, distributions. |
+| **nanoarrow** | | | | ✓ | ✓ | C Data Interface helpers — avoids manual Arrow struct lifecycle. |
+| **TA-Lib** | | | | | ✓ | Technical indicators. Post-M4: first domain beyond valuation. |
+| **QuantLib** | | | | | ✓ | Options, fixed income, vol surfaces. First post-M4 dependency. |
+| **BLAS + LAPACK** | | | | | ✓ | Matrix operations. Needed for portfolio analytics. |
+| **Cuba** | | | | | ✓ | Multidimensional integration. Only when ∫f(x)dx is actually needed. |
+| **FFTW** | | | | | ✓ | FFT/spectral analysis. Last dependency. |
+
+### Per-Library Rationale
+
+- **TA-Lib** is introduced first post-M4 because technical analysis is a self-contained domain that proves Yamori generalizes beyond valuation, with no dependencies on other post-M4 libraries.
+- **QuantLib** follows as the second post-M4 dependency because options pricing and fixed income form a natural domain pair, and QuantLib provides yield curve infrastructure that feeds Damodaran cost-of-debt lookups.
+- **BLAS + LAPACK** enters when portfolio analytics requires matrix-heavy computation — covariance matrices, SVD, optimization. This is where shared memory becomes operationally essential.
+- **Cuba** is deferred until a financial model actually requires high-dimensional integration (exotic derivatives, multi-asset expectations). It is not needed for Monte Carlo sampling through DCF — that uses GSL RNG.
+- **FFTW** is the last library, entering only when there is a concrete requirement for frequency-domain analytics (cycle detection, spectral filtering, market microstructure work).
+
+### Per-Milestone Library Scope
+
+**M1 — Arrow only:** Canonical memory representation, CSV I/O, compute operations. No GSL, no Cuba, no QuantLib.
+
+**M2 — Arrow + GSL:** GSL provides statistics (medians, outlier filtering), interpolation (linear transition paths), and roots (reverse DCF bisection). No Cuba, QuantLib, BLAS, or FFTW.
+
+**M3 — Arrow + GSL (still no Cuba):** Monte Carlo uses GSL RNG and distributions, not Cuba. We are not numerically integrating ∫f(x)dx — we are sampling assumptions through a deterministic DCF. No new dependency.
+
+**M4 — Arrow + GSL + nanoarrow:** nanoarrow provides the C Data Interface helper layer for the final C ABI. No additional numerical library.
+
+**Post-M4 — TA-Lib, QuantLib, BLAS/LAPACK, Cuba, FFTW:** Each introduced by domain need, not because the library happens to be useful.
+
 ## Increment Gate Checklist
 
 Every increment must answer before closing:

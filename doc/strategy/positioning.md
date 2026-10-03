@@ -1239,6 +1239,19 @@ If Yamori becomes merely a collection of wrappers, there is little reason for it
 
 If it becomes the **standard data plane and execution contract through which heterogeneous quantitative engines compose**, it solves a substantially harder problem.
 
+### 23.1 Differentiator Ranking by Defensibility
+
+Not all of Yamori's capabilities are equally defensible. The ranking matters for product focus and messaging:
+
+| Rank | Differentiator | Defensibility | Why |
+|------|---------------|---------------|-----|
+| 1 | Financial dependency graph + provenance | **Strongest** | No underlying library owns the financial meaning layer. This is the only project that connects `ROIC depends on NOPAT depends on EBIT...` with auditable lineage. |
+| 2 | Research→production parity + unified ABI + packaging | **Strong practical value** | Same runtime from Python to Zig to C++ with tested backend combinations. Operational value that saves real engineering work. |
+| 3 | Consistent null/missing-data policy + deterministic execution | **Infrastructure value** | Important for correctness but not a primary differentiator — Arrow and Polars already handle nulls well; Yamori's value is enforcing the policy across heterogeneous backends. |
+| 4 | Zero-copy and shared memory | **NOT differentiation** | Arrow and Polars already do this very well. Yamori should build on them rather than claim them as inventions. |
+
+This ranking is reflected in the product focus: the dependency graph and provenance are what Yamori should lead with, while zero-copy/shared-memory are implementation details inherited from Arrow.
+
 ---
 
 # 24. Product principle: own semantics, not algorithms
@@ -1457,7 +1470,19 @@ That is a fundamentally different ecosystem model from a language-specific packa
 
 ---
 
-# 30. The long-term position
+# 30. Build from the valuation outward, not the platform inward
+
+The original instinct might be to design Yamori as a universal quant runtime from the start: every domain, every library, every capability, all at once. That approach is a trap.
+
+The correct strategy is to start with the valuation engine — the one domain where all the pieces (dependency graphs, backends, shared memory, C ABI) are immediately useful — and let actual requirements force expansion to other domains at M4 and beyond.
+
+The risk assessment is straightforward: if M4 restructuring doesn't produce reusable abstractions, you have still built the valuation engine and lost almost nothing. The platform emerges from proven necessity, not from advance architecture.
+
+This is the product methodology for how Yamori evolves: build outward from valuation, not inward from an idealized platform.
+
+---
+
+# 31. The long-term position
 
 The desired mental model is not:
 
@@ -1491,7 +1516,7 @@ It is the **portability, interoperability and composition layer**.
 
 ---
 
-# 31. Positioning statement
+# 32. Positioning statement
 
 For developers building quantitative applications that need numerical, statistical, time-series, simulation, financial-modeling and risk capabilities across languages and deployment environments, **Yamori is a native quantitative-computing runtime that unifies mature specialized libraries behind one stable ABI and shared data model**.
 
