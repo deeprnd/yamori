@@ -99,9 +99,7 @@ Every algorithm — singular value decomposition, Monte Carlo integration, spect
 
 ## Systems foundation
 
-Yamori's systems foundation originates in Firedancer, Jump Crypto's high-performance Solana systems codebase, shaped by low-latency trading engineering.
-
-Firedancer contributes low-level C infrastructure for high-throughput networking, preallocated memory workspaces, concurrent processing, process isolation, and restrictive sandboxing.
+Yamori's systems foundation is built on low-level C infrastructure for high-throughput networking, preallocated memory workspaces, concurrent processing, process isolation, and restrictive sandboxing — patterns shaped by low-latency systems engineering.
 
 Yamori turns that systems foundation into a quantitative-computing runtime with shared-memory representations for cross-process zero-copy data sharing, unified backend routing, and a financial formula dependency graph.
 
