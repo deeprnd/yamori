@@ -665,19 +665,19 @@ pub const dependencyResolver = struct {
 
             // Sort new ready nodes and insert into queue maintaining sorted order.
             std.sort.block([]const u8, new_ready.items, {}, struct {
-            pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        }.lessThan);
+                pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.order(u8, a, b) == .lt;
+                }
+            }.lessThan);
             for (new_ready.items) |item| {
                 (queue.append(alloc, item)) catch return ResolveError.AllocationFailed;
             }
             // Re-sort entire queue to maintain order.
             std.sort.block([]const u8, queue.items, {}, struct {
-            pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-                return std.mem.order(u8, a, b) == .lt;
-            }
-        }.lessThan);
+                pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                    return std.mem.order(u8, a, b) == .lt;
+                }
+            }.lessThan);
             new_ready.deinit(alloc);
         }
 
@@ -762,10 +762,10 @@ pub const arrowAdapter = struct {
 
     // Comptime array — resolved at compile time
     pub const operation_map = [_]OperationMapping{
-        .{ .yamori_op = "add",     .arrow_func = "add" },
+        .{ .yamori_op = "add", .arrow_func = "add" },
         .{ .yamori_op = "subtract", .arrow_func = "subtract" },
         .{ .yamori_op = "multiply", .arrow_func = "multiply" },
-        .{ .yamori_op = "divide",   .arrow_func = "divide" },
+        .{ .yamori_op = "divide", .arrow_func = "divide" },
     };
 
     pub const AdapterError = error{
@@ -776,7 +776,7 @@ pub const arrowAdapter = struct {
 
     pub const ArrowComputeResult = struct {
         output_array: [*c]ArrowArray,
-        data: []f64,  // The actual f64 data for test access
+        data: []f64, // The actual f64 data for test access
         allocator: std.mem.Allocator,
         buffers_holder: ?[]u64, // [0]=null bitmap ptr, [1]=data ptr (owned)
     };
@@ -875,7 +875,7 @@ pub const arrowAdapter = struct {
 
         // Build output ArrowArray
         const out_arr = allocator.create(ArrowArray) catch return AdapterError.AllocationFailed;
-        
+
         // Allocate proper buffers array: [0] = null bitmap ptr, [1] = data ptr
         const buffers_holder = allocator.alloc(u64, 2) catch {
             allocator.destroy(out_arr);
@@ -883,9 +883,9 @@ pub const arrowAdapter = struct {
         };
         buffers_holder[0] = 0; // no validity bitmap
         buffers_holder[1] = @intFromPtr(out_alloc.ptr); // data buffer
-        
+
         const buf_ptr: [*c]*const void = @ptrCast(buffers_holder.ptr);
-        
+
         out_arr.* = ArrowArray{
             .length = len,
             .null_count = 0,
@@ -986,7 +986,7 @@ test "diamond_dependency: A→B, A→C, B→D, C→D" {
     try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{}, .operation = "d" });
     try formula.registryAdd(&registry, .{ .name = "B", .sources = &.{"A"}, .operation = "d" });
     try formula.registryAdd(&registry, .{ .name = "C", .sources = &.{"A"}, .operation = "d" });
-    try formula.registryAdd(&registry, .{ .name = "D", .sources = &.{"B", "C"}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "D", .sources = &.{ "B", "C" }, .operation = "d" });
 
     var resolver = dependencyResolver.DependencyResolver.init(allocator);
 
@@ -1003,10 +1003,18 @@ test "diamond_dependency: A→B, A→C, B→D, C→D" {
         if (std.mem.eql(u8, name, "B")) b_idx = i;
         if (std.mem.eql(u8, name, "C")) c_idx = i;
     }
-    if (b_idx) |b| { try expect(b > 0); } else unreachable;
-    if (c_idx) |c| { try expect(c > 0); } else unreachable;
-    if (b_idx) |b| { try expect(b < 3); } else unreachable;
-    if (c_idx) |c| { try expect(c < 3); } else unreachable;
+    if (b_idx) |b| {
+        try expect(b > 0);
+    } else unreachable;
+    if (c_idx) |c| {
+        try expect(c > 0);
+    } else unreachable;
+    if (b_idx) |b| {
+        try expect(b < 3);
+    } else unreachable;
+    if (c_idx) |c| {
+        try expect(c < 3);
+    } else unreachable;
 }
 
 test "empty_registry returns empty slice" {
@@ -1066,10 +1074,14 @@ test "multiple_chains_parallel: A→B and X→Y" {
         if (std.mem.eql(u8, name, "Y")) y_idx = i;
     }
     if (a_idx) |a| {
-        if (b_idx) |b| { try expect(a < b); } else unreachable;
+        if (b_idx) |b| {
+            try expect(a < b);
+        } else unreachable;
     } else unreachable;
     if (x_idx) |x| {
-        if (y_idx) |y| { try expect(x < y); } else unreachable;
+        if (y_idx) |y| {
+            try expect(x < y);
+        } else unreachable;
     } else unreachable;
 
     try expectEqualStrings("A", result.ordered_names[0]);
@@ -1086,7 +1098,7 @@ test "complex_diamond: A→B, A→C, B→D, C→D, D→E" {
     try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{}, .operation = "d" });
     try formula.registryAdd(&registry, .{ .name = "B", .sources = &.{"A"}, .operation = "d" });
     try formula.registryAdd(&registry, .{ .name = "C", .sources = &.{"A"}, .operation = "d" });
-    try formula.registryAdd(&registry, .{ .name = "D", .sources = &.{"B", "C"}, .operation = "d" });
+    try formula.registryAdd(&registry, .{ .name = "D", .sources = &.{ "B", "C" }, .operation = "d" });
     try formula.registryAdd(&registry, .{ .name = "E", .sources = &.{"D"}, .operation = "d" });
 
     var resolver = dependencyResolver.DependencyResolver.init(allocator);
@@ -1153,7 +1165,7 @@ test "determinism: same input 10 times produces identical output" {
         try formula.registryAdd(&registry, .{ .name = "A", .sources = &.{}, .operation = "d" });
         try formula.registryAdd(&registry, .{ .name = "B", .sources = &.{"A"}, .operation = "d" });
         try formula.registryAdd(&registry, .{ .name = "C", .sources = &.{"A"}, .operation = "d" });
-        try formula.registryAdd(&registry, .{ .name = "D", .sources = &.{"B", "C"}, .operation = "d" });
+        try formula.registryAdd(&registry, .{ .name = "D", .sources = &.{ "B", "C" }, .operation = "d" });
         try formula.registryAdd(&registry, .{ .name = "E", .sources = &.{"D"}, .operation = "d" });
 
         var resolver = dependencyResolver.DependencyResolver.init(allocator);
@@ -1261,7 +1273,7 @@ test "no_cycle_diamond: A→B, A→C, B→D, C→D succeeds" {
 
     try cycleDetector.detectCycleBeforeAdd(&registry, .{
         .name = "D",
-        .sources = &.{"B", "C"},
+        .sources = &.{ "B", "C" },
         .operation = "d",
     }, allocator);
 }
@@ -1324,7 +1336,6 @@ test "multiple_cycles_detects_one: two separate cycles" {
 
     try expect(err == cycleDetector.CycleError.CycleDetected);
 }
-
 
 // ─── Arrow Adapter Tests ────────────────────────────────────────────────
 
@@ -1527,8 +1538,8 @@ test "arrow_adapter: executeOperation(divide) by zero → TypeMismatch" {
 test "arrow_adapter: executeOperation(empty_operands → TypeMismatch" {
     const allocator = std.testing.allocator;
 
-    const data_a = [1]f64{ 1.0 };
-    const data_b = [1]f64{ 2.0 };
+    const data_a = [1]f64{1.0};
+    const data_b = [1]f64{2.0};
 
     const arr_a = try buildArrowArray(allocator, data_a[0..], "d");
     defer allocator.free(arr_a.data_buf);
@@ -1557,7 +1568,7 @@ test "arrow_adapter: executeOperation(single_operand → TypeMismatch" {
     defer allocator.free(arr_a.format_buf);
 
     // Pass 1 operand
-    const operands = &.{ &arr_a.arrow_arr };
+    const operands = &.{&arr_a.arrow_arr};
     const result = arrowAdapter.executeOperation("add", operands, allocator);
     try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
@@ -1750,8 +1761,8 @@ test "arrow_adapter: executeOperation(large_values) [1e10,1e10]+[1e10,1e10]=[2e1
 test "arrow_adapter: executeOperation(single_element) [5.0]+[3.0]=[8.0]" {
     const allocator = std.testing.allocator;
 
-    const a = [1]f64{ 5.0 };
-    const b = [1]f64{ 3.0 };
+    const a = [1]f64{5.0};
+    const b = [1]f64{3.0};
 
     var arr_a = try buildArrowArray(allocator, a[0..], "d");
     defer allocator.free(arr_a.data_buf);
@@ -1791,7 +1802,6 @@ test "arrow_adapter: executeOperation(mismatched_length → TypeMismatch" {
     const result = arrowAdapter.executeOperation("add", operands, allocator);
     try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
-
 
 // ─── C ABI Validation ────────────────────────────────────────────────────
 
@@ -1889,8 +1899,7 @@ pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
 
     // Step 1: resolve dependencies to get topological order
     var resolver = dependencyResolver.DependencyResolver.init(alloc);
-    const resolve_result = dependencyResolver.resolveDependencies(&resolver, input.registry)
-        catch |err| {
+    const resolve_result = dependencyResolver.resolveDependencies(&resolver, input.registry) catch |err| {
         switch (err) {
             dependencyResolver.ResolveError.AllocationFailed => return ValuationError.AllocationFailed,
             dependencyResolver.ResolveError.IncompleteRegistry => return ValuationError.ResolveError,
@@ -1948,7 +1957,7 @@ pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
         // Do NOT call computeResultFree — we're taking the pieces into the frame.
         // Cast [*c]ArrowArray to *ArrowArray (output_array is a heap-allocated single struct).
         const result_arr_ptr: *arrowAdapter.ArrowArray = @ptrCast(compute_result.output_array);
-        
+
         (frame.results.put(name, result_arr_ptr)) catch {
             arrowAdapter.computeResultFree(compute_result);
             return ValuationError.AllocationFailed;
@@ -2040,7 +2049,9 @@ test "runValuation: linear_chain_execution A→B" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "B", .sources = &.{ "A", "A" }, .operation = "add",
+        .name = "B",
+        .sources = &.{ "A", "A" },
+        .operation = "add",
     });
 
     // Source: A = [1, 2, 3]
@@ -2077,7 +2088,9 @@ test "runValuation: single_formula_no_deps" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "X", .sources = &.{ "SA", "SB" }, .operation = "multiply",
+        .name = "X",
+        .sources = &.{ "SA", "SB" },
+        .operation = "multiply",
     });
 
     const sa_src = try makeSourceArray(alloc, &[_]f64{ 1, 2, 3 });
@@ -2115,10 +2128,14 @@ test "runValuation: independent_formulas" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "X", .sources = &.{ "XA", "XB" }, .operation = "add",
+        .name = "X",
+        .sources = &.{ "XA", "XB" },
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "Y", .sources = &.{ "YA", "YB" }, .operation = "divide",
+        .name = "Y",
+        .sources = &.{ "YA", "YB" },
+        .operation = "divide",
     });
 
     const xa_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
@@ -2167,7 +2184,9 @@ test "runValuation: type_mismatch_error" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "F", .sources = &.{ "BAD", "X" }, .operation = "add",
+        .name = "F",
+        .sources = &.{ "BAD", "X" },
+        .operation = "add",
     });
 
     const bad_arr = try makeNullArray(alloc);
@@ -2201,7 +2220,9 @@ test "runValuation: undefined_operation_error" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "F", .sources = &.{ "A", "B" }, .operation = "foobar",
+        .name = "F",
+        .sources = &.{ "A", "B" },
+        .operation = "foobar",
     });
 
     const a_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
@@ -2237,13 +2258,19 @@ test "runValuation: diamond_execution" {
     defer formula.registryDeinit(&registry);
     // Diamond: A(source) → B(add), A(source) → C(multiply), B+C → D(subtract)
     try formula.registryAdd(&registry, .{
-        .name = "B", .sources = &.{ "A", "A" }, .operation = "add",
+        .name = "B",
+        .sources = &.{ "A", "A" },
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "C", .sources = &.{ "A", "A" }, .operation = "multiply",
+        .name = "C",
+        .sources = &.{ "A", "A" },
+        .operation = "multiply",
     });
     try formula.registryAdd(&registry, .{
-        .name = "D", .sources = &.{ "B", "C" }, .operation = "subtract",
+        .name = "D",
+        .sources = &.{ "B", "C" },
+        .operation = "subtract",
     });
 
     const a_src = try makeSourceArray(alloc, &[_]f64{ 2, 3 });
@@ -2278,7 +2305,9 @@ test "runValuation: partial_dependency_resolution" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "B", .sources = &.{ "A", "A" }, .operation = "multiply",
+        .name = "B",
+        .sources = &.{ "A", "A" },
+        .operation = "multiply",
     });
 
     const a_src = try makeSourceArray(alloc, &[_]f64{ 5, 10 });
@@ -2310,7 +2339,9 @@ test "runValuation: multiple_sources_for_one_formula" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "C", .sources = &.{ "A", "B" }, .operation = "divide",
+        .name = "C",
+        .sources = &.{ "A", "B" },
+        .operation = "divide",
     });
 
     const a_src = try makeSourceArray(alloc, &[_]f64{ 10, 20 });
@@ -2347,10 +2378,14 @@ test "runValuation: fail_closed_on_error" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "F1", .sources = &.{ "X", "Y" }, .operation = "foobar",
+        .name = "F1",
+        .sources = &.{ "X", "Y" },
+        .operation = "foobar",
     });
     try formula.registryAdd(&registry, .{
-        .name = "F2", .sources = &.{ "X", "Y" }, .operation = "add",
+        .name = "F2",
+        .sources = &.{ "X", "Y" },
+        .operation = "add",
     });
 
     const x_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
@@ -2385,19 +2420,29 @@ test "runValuation: complex_chain" {
     var registry = try formula.registryInit(alloc);
     defer formula.registryDeinit(&registry);
     try formula.registryAdd(&registry, .{
-        .name = "ROIC", .sources = &.{ "R", "I" }, .operation = "divide",
+        .name = "ROIC",
+        .sources = &.{ "R", "I" },
+        .operation = "divide",
     });
     try formula.registryAdd(&registry, .{
-        .name = "STLA", .sources = &.{ "ROIC", "ONE" }, .operation = "multiply",
+        .name = "STLA",
+        .sources = &.{ "ROIC", "ONE" },
+        .operation = "multiply",
     });
     try formula.registryAdd(&registry, .{
-        .name = "EV", .sources = &.{ "STLA", "M" }, .operation = "multiply",
+        .name = "EV",
+        .sources = &.{ "STLA", "M" },
+        .operation = "multiply",
     });
     try formula.registryAdd(&registry, .{
-        .name = "EBITDA", .sources = &.{ "EV", "D" }, .operation = "subtract",
+        .name = "EBITDA",
+        .sources = &.{ "EV", "D" },
+        .operation = "subtract",
     });
     try formula.registryAdd(&registry, .{
-        .name = "EV_EBITDA", .sources = &.{ "EBITDA", "EV" }, .operation = "divide",
+        .name = "EV_EBITDA",
+        .sources = &.{ "EBITDA", "EV" },
+        .operation = "divide",
     });
 
     const r_src = try makeSourceArray(alloc, &[_]f64{ 100, 200 });
@@ -2424,11 +2469,21 @@ test "runValuation: complex_chain" {
     defer resultFrameFree(frame);
 
     // Free all source arrays after runValuation completes
-    alloc.free(r_src[1]); alloc.free(r_src[2]); alloc.destroy(r_src[0]);
-    alloc.free(i_src[1]); alloc.free(i_src[2]); alloc.destroy(i_src[0]);
-    alloc.free(one_src[1]); alloc.free(one_src[2]); alloc.destroy(one_src[0]);
-    alloc.free(m_src[1]); alloc.free(m_src[2]); alloc.destroy(m_src[0]);
-    alloc.free(d_src[1]); alloc.free(d_src[2]); alloc.destroy(d_src[0]);
+    alloc.free(r_src[1]);
+    alloc.free(r_src[2]);
+    alloc.destroy(r_src[0]);
+    alloc.free(i_src[1]);
+    alloc.free(i_src[2]);
+    alloc.destroy(i_src[0]);
+    alloc.free(one_src[1]);
+    alloc.free(one_src[2]);
+    alloc.destroy(one_src[0]);
+    alloc.free(m_src[1]);
+    alloc.free(m_src[2]);
+    alloc.destroy(m_src[0]);
+    alloc.free(d_src[1]);
+    alloc.free(d_src[2]);
+    alloc.destroy(d_src[0]);
 
     try expectEqual(5, frame.results.count());
     try expectApprox(frame.result_data.get("ROIC").?, &[_]f64{ 10, 10 });
@@ -2488,8 +2543,7 @@ pub fn attachProvenance(
     // plus data keys that are sources of those formulas (except target's direct data-key sources).
     // Use the dependency resolver for topo ordering of formulas.
     var resolver = dependencyResolver.DependencyResolver.init(allocator);
-    const topo_result = dependencyResolver.resolveDependencies(&resolver, registry)
-        catch return ProvenanceError.AllocationFailed;
+    const topo_result = dependencyResolver.resolveDependencies(&resolver, registry) catch return ProvenanceError.AllocationFailed;
     defer dependencyResolver.resolveResultFree(topo_result);
 
     // BFS from target to find all reachable formulas and their data-key sources.
@@ -2511,8 +2565,8 @@ pub fn attachProvenance(
         const current = queue.items[qi];
         qi += 1;
 
-        if (registry.formulas.get(current)) |nf| {
-            for (nf.sources) |src| {
+        if (registry.formulas.get(current)) |current_nf| {
+            for (current_nf.sources) |src| {
                 if (visited.get(src) == null) {
                     const src_copy = (allocator.dupe(u8, src)) catch return ProvenanceError.AllocationFailed;
                     (visited.put(src_copy, {})) catch return ProvenanceError.AllocationFailed;
@@ -2524,26 +2578,29 @@ pub fn attachProvenance(
 
     // Build chain: include all visited nodes in topo order.
     // For each topo-ordered formula, add it if visited.
-    // For data keys (not formulas), add them in their definition order.
+    // Data keys are visited names that are not themselves formulas in the registry.
     var chain = std.ArrayListUnmanaged([]const u8).empty;
     errdefer {
         for (chain.items) |item| allocator.free(item);
         chain.deinit(allocator);
     }
 
-    // First add all data keys that are sources of visited formulas, in definition order.
-    for (registry.data_keys) |key| {
-        if (visited.get(key) != null) {
-            const key_copy = (allocator.dupe(u8, key)) catch return ProvenanceError.AllocationFailed;
+    // Collect data keys: visited names not present as formulas.
+    // Iterate BFS-visited names in queue order (discovery order) for consistency.
+    var qi2: usize = 0;
+    while (qi2 < queue.items.len) : (qi2 += 1) {
+        const name = queue.items[qi2];
+        if (registry.formulas.get(name) == null) {
+            const key_copy = (allocator.dupe(u8, name)) catch return ProvenanceError.AllocationFailed;
             (chain.append(allocator, key_copy)) catch return ProvenanceError.AllocationFailed;
         }
     }
 
     // Then add all visited formulas in topo order.
-    for (topo_result.ordered_names) |name| {
-        if (visited.get(name) != null) {
-            const name_copy = (allocator.dupe(u8, name)) catch return ProvenanceError.AllocationFailed;
-            (chain.append(allocator, name_copy)) catch return ProvenanceError.AllocationFailed;
+    for (topo_result.ordered_names) |topo_name| {
+        if (visited.get(topo_name) != null) {
+            const topo_name_copy = (allocator.dupe(u8, topo_name)) catch return ProvenanceError.AllocationFailed;
+            (chain.append(allocator, topo_name_copy)) catch return ProvenanceError.AllocationFailed;
         }
     }
 
@@ -2656,13 +2713,19 @@ test "provenance: chain_provenance A→B→C" {
     defer formula.registryDeinit(&registry);
 
     try formula.registryAdd(&registry, .{
-        .name = "A", .sources = &.{}, .operation = "add",
+        .name = "A",
+        .sources = &.{},
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "B", .sources = &.{ "A" }, .operation = "add",
+        .name = "B",
+        .sources = &.{"A"},
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "C", .sources = &.{ "B" }, .operation = "multiply",
+        .name = "C",
+        .sources = &.{"B"},
+        .operation = "multiply",
     });
 
     var prov = try attachProvenance("C", &registry, alloc);
@@ -2681,7 +2744,9 @@ test "provenance: leaf_metric_provenance Revenue (no sources)" {
     defer formula.registryDeinit(&registry);
 
     try formula.registryAdd(&registry, .{
-        .name = "Revenue", .sources = &.{}, .operation = "add",
+        .name = "Revenue",
+        .sources = &.{},
+        .operation = "add",
     });
 
     var prov = try attachProvenance("Revenue", &registry, alloc);
@@ -2699,16 +2764,24 @@ test "provenance: diamond_provenance A→B, A→C, B→D, C→D" {
     defer formula.registryDeinit(&registry);
 
     try formula.registryAdd(&registry, .{
-        .name = "A", .sources = &.{}, .operation = "add",
+        .name = "A",
+        .sources = &.{},
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "B", .sources = &.{ "A" }, .operation = "add",
+        .name = "B",
+        .sources = &.{"A"},
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "C", .sources = &.{ "A" }, .operation = "add",
+        .name = "C",
+        .sources = &.{"A"},
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "D", .sources = &.{ "B", "C" }, .operation = "subtract",
+        .name = "D",
+        .sources = &.{ "B", "C" },
+        .operation = "subtract",
     });
 
     var prov = try attachProvenance("D", &registry, alloc);
@@ -2730,10 +2803,14 @@ test "provenance: re_evaluation_invariance" {
     defer formula.registryDeinit(&registry);
 
     try formula.registryAdd(&registry, .{
-        .name = "A", .sources = &.{}, .operation = "add",
+        .name = "A",
+        .sources = &.{},
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "B", .sources = &.{ "A" }, .operation = "multiply",
+        .name = "B",
+        .sources = &.{"A"},
+        .operation = "multiply",
     });
 
     var prov1 = try attachProvenance("B", &registry, alloc);
@@ -2758,19 +2835,29 @@ test "provenance: complex_chain_provenance ROIC→STLA→EV→EBITDA→EV_EBITDA
     defer formula.registryDeinit(&registry);
 
     try formula.registryAdd(&registry, .{
-        .name = "ROIC", .sources = &.{ "R", "I" }, .operation = "divide",
+        .name = "ROIC",
+        .sources = &.{ "R", "I" },
+        .operation = "divide",
     });
     try formula.registryAdd(&registry, .{
-        .name = "STLA", .sources = &.{ "ROIC", "ONE" }, .operation = "multiply",
+        .name = "STLA",
+        .sources = &.{ "ROIC", "ONE" },
+        .operation = "multiply",
     });
     try formula.registryAdd(&registry, .{
-        .name = "EV", .sources = &.{ "STLA", "M" }, .operation = "multiply",
+        .name = "EV",
+        .sources = &.{ "STLA", "M" },
+        .operation = "multiply",
     });
     try formula.registryAdd(&registry, .{
-        .name = "EBITDA", .sources = &.{ "EV", "D" }, .operation = "subtract",
+        .name = "EBITDA",
+        .sources = &.{ "EV", "D" },
+        .operation = "subtract",
     });
     try formula.registryAdd(&registry, .{
-        .name = "EV_EBITDA", .sources = &.{ "EBITDA", "EV" }, .operation = "divide",
+        .name = "EV_EBITDA",
+        .sources = &.{ "EBITDA", "EV" },
+        .operation = "divide",
     });
 
     var prov = try attachProvenance("EV_EBITDA", &registry, alloc);
@@ -2788,10 +2875,14 @@ test "provenance: query_provenance_by_name" {
     defer formula.registryDeinit(&registry);
 
     try formula.registryAdd(&registry, .{
-        .name = "X", .sources = &.{ "A", "B" }, .operation = "add",
+        .name = "X",
+        .sources = &.{ "A", "B" },
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "Y", .sources = &.{ "X" }, .operation = "multiply",
+        .name = "Y",
+        .sources = &.{"X"},
+        .operation = "multiply",
     });
 
     var provenance_map = std.StringHashMap(Provenance).init(alloc);
@@ -2828,13 +2919,19 @@ test "provenance: all_provenance_built" {
     defer formula.registryDeinit(&registry);
 
     try formula.registryAdd(&registry, .{
-        .name = "A", .sources = &.{}, .operation = "add",
+        .name = "A",
+        .sources = &.{},
+        .operation = "add",
     });
     try formula.registryAdd(&registry, .{
-        .name = "B", .sources = &.{ "A" }, .operation = "multiply",
+        .name = "B",
+        .sources = &.{"A"},
+        .operation = "multiply",
     });
     try formula.registryAdd(&registry, .{
-        .name = "C", .sources = &.{ "B" }, .operation = "divide",
+        .name = "C",
+        .sources = &.{"B"},
+        .operation = "divide",
     });
 
     // Create a minimal frame with 3 entries (A, B, C)
@@ -2849,9 +2946,16 @@ test "provenance: all_provenance_built" {
     a_buffers[1] = @intFromPtr(a_data.ptr);
     const a_arr = try alloc.create(arrowAdapter.ArrowArray);
     a_arr.* = arrowAdapter.ArrowArray{
-        .length = 1, .null_count = 0, .offset = 0, .n_buffers = 1,
-        .n_children = 0, .buffers = @ptrCast(a_buffers.ptr),
-        .children = null, .dictionary = null, .release = null, .private_data = null,
+        .length = 1,
+        .null_count = 0,
+        .offset = 0,
+        .n_buffers = 1,
+        .n_children = 0,
+        .buffers = @ptrCast(a_buffers.ptr),
+        .children = null,
+        .dictionary = null,
+        .release = null,
+        .private_data = null,
     };
     try frame.results.put("A", a_arr);
     try frame.result_data.put("A", a_data);
@@ -2864,9 +2968,16 @@ test "provenance: all_provenance_built" {
     b_buffers[1] = @intFromPtr(b_data.ptr);
     const b_arr = try alloc.create(arrowAdapter.ArrowArray);
     b_arr.* = arrowAdapter.ArrowArray{
-        .length = 1, .null_count = 0, .offset = 0, .n_buffers = 1,
-        .n_children = 0, .buffers = @ptrCast(b_buffers.ptr),
-        .children = null, .dictionary = null, .release = null, .private_data = null,
+        .length = 1,
+        .null_count = 0,
+        .offset = 0,
+        .n_buffers = 1,
+        .n_children = 0,
+        .buffers = @ptrCast(b_buffers.ptr),
+        .children = null,
+        .dictionary = null,
+        .release = null,
+        .private_data = null,
     };
     try frame.results.put("B", b_arr);
     try frame.result_data.put("B", b_data);
@@ -2879,9 +2990,16 @@ test "provenance: all_provenance_built" {
     c_buffers[1] = @intFromPtr(c_data.ptr);
     const c_arr = try alloc.create(arrowAdapter.ArrowArray);
     c_arr.* = arrowAdapter.ArrowArray{
-        .length = 1, .null_count = 0, .offset = 0, .n_buffers = 1,
-        .n_children = 0, .buffers = @ptrCast(c_buffers.ptr),
-        .children = null, .dictionary = null, .release = null, .private_data = null,
+        .length = 1,
+        .null_count = 0,
+        .offset = 0,
+        .n_buffers = 1,
+        .n_children = 0,
+        .buffers = @ptrCast(c_buffers.ptr),
+        .children = null,
+        .dictionary = null,
+        .release = null,
+        .private_data = null,
     };
     try frame.results.put("C", c_arr);
     try frame.result_data.put("C", c_data);
@@ -2913,4 +3031,3 @@ test "provenance: all_provenance_built" {
     try expectEqualStrings("B", prov_c.chain.items[1]);
     try expectEqualStrings("C", prov_c.chain.items[2]);
 }
-
