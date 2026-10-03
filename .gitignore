@@ -1,3 +1,121 @@
-.zig-cache/
-zig-out/
+*ATTIC*
+/.hermes
+/build
+/build-cross
+bin
+dump
+unit-test
+tmp
+frontend
+.DS_Store
+
+genhtml/
+target/
+*.lcov
+*.profraw
+*.profdata
+/report
+flamegraph.html
+perf.data
+perf.data.old
+
+# GDB
+.gdb_history
+
+# Clangd
+.cache
+/.clangd
+compile_commands.json
+
+# Rust
+**/Cargo.lock
+
+# Zig
+.zig-global-cache
+
+# Dependencies
+opt/
+opt-msan/
+deps-bundle.tar.zst
+
+# Nix
+/result
+
+# Vimdiff
+*.orig
+
+# Vim
+*.swp
+*.swo
+
+# VSCode
+.vscode
+.codex
+.claude
+memory
+
+# JetBrains
+.fleet
+.idea
+
+# Packet Captures
+*.pcap
+*.pcapng
+
+# Logs
+*.log
+
+# Local build/test artifacts
 *.o
+*.obj
+/os_api
+/test_process_topology
+/zig-test
+
+# VitePress docs
+/book/.vitepress/cache
+/book/.vitepress/dist
+/book/node_modules
+/book/bun.lock
+/book/bun.lockb
+
+# Custom config
+/*.toml
+/*.sh
+!/pyproject.toml
+
+# Python
+venv
+.venv
+*.pyc
+*.egg-info/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Zig
+.zig-cache
+zig-pkg/
+zig-out/
+
+# Fuchsia trace format
+*.fxt
+
+# LLMs
+.claude
+.codex
+.hermes-tmp.*
+
+# Secrets
+.env
+
+# Lore
+doc/strategy/lore/audits/
+
+# Version derive
+src/util/fd_version_generated.h
+src/util/fd_version_generated1.h
+src/app/firedancer/version.h
+src/app/firedancer/version2.h
