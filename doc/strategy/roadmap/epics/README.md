@@ -1,13 +1,13 @@
-# Roadmap — Yamori Intrinsic Valuation Engine (Tickoni Pillar)
+# Roadmap — Yamori Intrinsic Valuation Engine (Yamori Pillar)
 
 Use this folder for per-increment planning, tracking, and reference. GitHub is
 the issue tracker: epics, stories, and tasks are all GitHub issues with
 different labels and sub-issue relationships.
 
-**Tickoni pillar**: Every epic in this roadmap is designed to strongly support
-the Tickoni project. Valuation outputs feed downstream Tickoni tiles; the
+**Yamori pillar**: Every epic in this roadmap is designed to strongly support
+the Yamori project. Valuation outputs feed downstream Yamori tiles; the
 `runValuation()` pipeline is the canonical callable pivot; audit trails, provenance
-hashes, and dataset manifests are consumed by Tickoni's research and comparison
+hashes, and dataset manifests are consumed by Yamori's research and comparison
 systems.
 
 ## Issue Hierarchy
