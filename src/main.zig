@@ -170,7 +170,10 @@ pub const cycleDetector = struct {
         colors: *std.StringHashMap(u8),
         path: *std.ArrayListUnmanaged([]const u8),
         alloc: std.mem.Allocator,
+        depth: usize,
+        max_depth: usize,
     ) CycleError!bool {
+        if (depth > max_depth) return CycleError.CycleDetected;
         // Mark node as Gray (1)
         (colors.put(node, 1)) catch return CycleError.CycleDetected;
 
@@ -190,7 +193,7 @@ pub const cycleDetector = struct {
                     return true;
                 } else if (color == 0) {
                     // White node → recurse
-                    if (try dfsCycle(dep, adj, colors, path, alloc)) {
+                    if (try dfsCycle(dep, adj, colors, path, alloc, depth + 1, max_depth)) {
                         return true;
                     }
                 }
@@ -296,7 +299,8 @@ pub const cycleDetector = struct {
         for (all_names.items) |start_node| {
             if (colors.get(start_node)) |color| {
                 if (color != 0) continue;
-                if (try dfsCycle(start_node, adj, &colors, &path_list, allocator)) {
+                const max_depth = registry.formulas.count();
+                if (try dfsCycle(start_node, adj, &colors, &path_list, allocator, 0, max_depth)) {
                     cycle_found = true;
                     break;
                 }
@@ -418,7 +422,8 @@ pub const cycleDetector = struct {
         for (all_names.items) |start_node| {
             if (colors.get(start_node)) |color| {
                 if (color != 0) continue;
-                if (dfsCycleWithReport(start_node, adj, &colors, &path_list, &cycle_path, allocator)) {
+                const max_depth = registry.formulas.count();
+                if (dfsCycleWithReport(start_node, adj, &colors, &path_list, &cycle_path, allocator, 0, max_depth)) {
                     break;
                 }
             }
@@ -454,7 +459,10 @@ pub const cycleDetector = struct {
         path: *std.ArrayListUnmanaged([]const u8),
         cycle_path: *std.ArrayListUnmanaged([]const u8),
         alloc: std.mem.Allocator,
+        depth: usize,
+        max_depth: usize,
     ) CycleError!bool {
+        if (depth > max_depth) return CycleError.CycleDetected;
         // Mark node as Gray (1)
         (colors.put(node, 1)) catch return CycleError.CycleDetected;
 
@@ -487,7 +495,7 @@ pub const cycleDetector = struct {
                     }
                     return true;
                 } else if (color == 0) {
-                    if (try dfsCycleWithReport(dep, adj, colors, path, cycle_path, alloc)) {
+                    if (try dfsCycleWithReport(dep, adj, colors, path, cycle_path, alloc, depth + 1, max_depth)) {
                         return true;
                     }
                 }
@@ -806,6 +814,12 @@ pub const arrowAdapter = struct {
 
         const len = operands[0].*.length;
         if (len <= 0) return AdapterError.TypeMismatch;
+        if (len > std.math.maxInt(usize)) return AdapterError.TypeMismatch;
+
+        // Validate all operands have the same length
+        for (operands, 0..) |arr, i| {
+            if (i > 0 and arr.*.length != len) return AdapterError.TypeMismatch;
+        }
 
         // Get data buffer pointers (index 1 = data buffer after validity bitmap at [0])
         // Read data buffer pointers from operands (buffers[1] = data, buffers[0] = validity/null)
@@ -1729,10 +1743,9 @@ test "arrow_adapter: executeOperation(single_element) [5.0]+[3.0]=[8.0]" {
     try expectEqual(8.0, result.data[0]);
 }
 
-test "arrow_adapter: executeOperation(mismatched_length → uses first operand length" {
+test "arrow_adapter: executeOperation(mismatched_length → TypeMismatch" {
     const allocator = std.testing.allocator;
 
-    // V1.1 uses first operand's length
     const a = [2]f64{ 1, 2 };
     const b = [3]f64{ 4, 5, 6 };
 
@@ -1747,9 +1760,23 @@ test "arrow_adapter: executeOperation(mismatched_length → uses first operand l
     defer allocator.free(arr_b.format_buf);
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("add", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
-
-    try expectEqual(@as(i64, 2), result.output_array.*.length);
+    const result = arrowAdapter.executeOperation("add", operands, allocator);
+    try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
 
+
+// ─── C ABI Validation ────────────────────────────────────────────────────
+
+test "arrow_adapter: ArrowSchema extern struct has reasonable size" {
+    // ArrowSchema on 64-bit: 9 pointer-sized fields = 72 bytes
+    const sz = @sizeOf(arrowAdapter.ArrowSchema);
+    try expect(sz == 72);
+    try expect(@alignOf(arrowAdapter.ArrowSchema) == 8);
+}
+
+test "arrow_adapter: ArrowArray extern struct has reasonable size" {
+    // ArrowArray on 64-bit: 10 pointer-sized fields = 80 bytes
+    const sz = @sizeOf(arrowAdapter.ArrowArray);
+    try expect(sz == 80);
+    try expect(@alignOf(arrowAdapter.ArrowArray) == 8);
+}
