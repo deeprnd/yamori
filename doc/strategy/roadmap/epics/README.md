@@ -137,16 +137,16 @@ Use these project docs to fill and implement issues:
 | [V8.6](V8.6.md) | Portfolio simulation and scenario analysis — historical/Monte Carlo scenarios, drawdown analysis, tail risk |
 | [V8.7](V8.7.md) | Historical scenario analysis and backtesting — rolling optimization, weight drift, turnover, rebalance frequency |
 
-### Milestone 9: Advanced Analytics
+### Milestone 9: Options and Derivatives
 
 | Epic | Description |
 | --- | --- |
-| [V9.1](V9.1.md) | Cuba/FFTW integration and registry — Vegas/Suave/Cuhre/Divonne, FFT/DCT/DST, graph registration |
-| [V9.2](V9.2.md) | Monte Carlo integration and portfolio simulation — Vegas/Suave, variance reduction, deterministic seeding |
-| [V9.3](V9.3.md) | Deterministic integration for pricing and calibration — Cuhre/Divonne, high-precision, error bounds |
-| [V9.4](V9.4.md) | FFT spectral analysis — real/complex DFT, DCT, DST, plan strategy, signal decomposition |
-| [V9.5](V9.5.md) | Spectral filtering and cycle decomposition — bandpass/low-pass filtering, cycle detection, peak significance |
-| [V9.6](V9.6.md) | Advanced analytics demo — complete workflow, five-domain composition, deterministic reproducibility |
+| [V9.1](V9.1.md) | QuantLib pricing registry — backend integration, instrument registration, dependency graph mapping |
+| [V9.2](V9.2.md) | Equity options pricing — European and American options with full Greeks via Black-Scholes and binomial trees |
+| [V9.3](V9.3.md) | Exotic options pricing — barrier, Asian, lookback, and compound options via Monte Carlo and finite-difference |
+| [V9.4](V9.4.md) | Fixed income instruments — bonds, interest rate swaps, caps, floors, and swaptions with yield curve infrastructure |
+| [V9.5](V9.5.md) | Volatility surfaces and yield curve management — market-data constructs as shared-memory objects |
+| [V9.6](V9.6.md) | Derivatives cross-domain workflow — complete end-to-end pricing pipeline across all three M9 domains |
 
 ## How Roadmap Files Are Organized
 
