@@ -2,6 +2,8 @@
 
 set export
 
+justfile_dir := "."
+
 import "just/security.just"
 import "just/quality.just"
 
