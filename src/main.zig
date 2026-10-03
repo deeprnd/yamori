@@ -702,9 +702,179 @@ pub const dependencyResolver = struct {
     }
 };
 
-pub fn main() void {
-    std.debug.print("Yamori — Named Formula Definition (V1.1-S1)\n", .{});
-}
+// ─── Arrow Adapter ──────────────────────────────────────────────────────
+
+pub const arrowAdapter = struct {
+    /// Arrow C Data Interface extern structs
+    /// See: https://arrow.apache.org/docs/format/CDataInterface.html
+    pub const ArrowSchema = extern struct {
+        format: [*c]const u8,
+        name: [*c]const u8,
+        metadata: [*c]const u8,
+        flags: i64,
+        n_children: i64,
+        children: [*c]ArrowSchema,
+        dictionary: [*c]ArrowSchema,
+        release: ?*const fn (*ArrowSchema) void,
+        private_data: ?*anyopaque,
+    };
+
+    pub const ArrowArray = extern struct {
+        length: i64,
+        null_count: i64,
+        offset: i64,
+        n_buffers: i64,
+        n_children: i64,
+        /// Pointer to an array of n_buffers void* pointers.
+        /// buffers[0] = validity bitmap (may be null if no nulls)
+        /// buffers[1] = data buffer (f64 for "d" type)
+        buffers: [*c]*const void,
+        children: [*c]ArrowArray,
+        dictionary: [*c]ArrowArray,
+        release: ?*const fn (*ArrowArray) void,
+        private_data: ?*anyopaque,
+    };
+
+    /// OperationMapping — comptime lookup table for Yamori → Arrow Compute
+    pub const OperationMapping = struct {
+        yamori_op: []const u8,
+        arrow_func: []const u8,
+    };
+
+    // Comptime array — resolved at compile time
+    pub const operation_map = [_]OperationMapping{
+        .{ .yamori_op = "add",     .arrow_func = "add" },
+        .{ .yamori_op = "subtract", .arrow_func = "subtract" },
+        .{ .yamori_op = "multiply", .arrow_func = "multiply" },
+        .{ .yamori_op = "divide",   .arrow_func = "divide" },
+    };
+
+    pub const AdapterError = error{
+        UndefinedOperation,
+        TypeMismatch,
+        AllocationFailed,
+    };
+
+    pub const ArrowComputeResult = struct {
+        output_array: [*c]ArrowArray,
+        data: []f64,  // The actual f64 data for test access
+        allocator: std.mem.Allocator,
+    };
+
+    /// Free an ArrowComputeResult
+    pub fn computeResultFree(result: ArrowComputeResult) void {
+        const alloc = result.allocator;
+        // Free the data buffer
+        alloc.free(result.data);
+        // Free the ArrowArray struct itself — cast unbounded pointer back to single-item
+        const ptr: *arrowAdapter.ArrowArray = @ptrFromInt(@intFromPtr(result.output_array));
+        alloc.destroy(ptr);
+    }
+
+    /// Look up Arrow function name by Yamori operation (comptime table lookup)
+    pub fn resolveArrowFunc(op: []const u8) AdapterError![]const u8 {
+        for (operation_map) |mapping| {
+            if (std.mem.eql(u8, op, mapping.yamori_op)) {
+                return mapping.arrow_func;
+            }
+        }
+        return AdapterError.UndefinedOperation;
+    }
+
+    /// Validate that all ArrowArrays have float64 data buffers (non-null).
+    /// Format validation would require ArrowSchema which is not carried on the array.
+    pub fn validateFloat64Arrays(_operands: []const [*c]ArrowArray) AdapterError!void {
+        for (_operands) |arr| {
+            // Check that buffers pointer is non-null (required for data access)
+            if (arr.*.buffers == null) return AdapterError.TypeMismatch;
+        }
+    }
+
+    /// Execute a formula operation on Arrow float64 arrays.
+    /// For V1.1, reads raw data from ArrowArray buffers and returns a new ArrowArray.
+    /// The buffers field points to an array of pointers:
+    ///   buffers[0] = validity bitmap (may be null)
+    ///   buffers[1] = float64 data
+    pub fn executeOperation(
+        op_name: []const u8,
+        operands: []const [*c]ArrowArray,
+        allocator: std.mem.Allocator,
+    ) AdapterError!ArrowComputeResult {
+        try validateFloat64Arrays(operands);
+
+        if (operands.len < 2) return AdapterError.TypeMismatch;
+
+        const len = operands[0].*.length;
+        if (len <= 0) return AdapterError.TypeMismatch;
+
+        // Get data buffer pointers (index 1 = data buffer after validity bitmap at [0])
+        // Read data buffer pointers from operands (buffers[1] = data, buffers[0] = validity/null)
+        const buf0: [*c]*const void = operands[0].*.buffers;
+        const buf1: [*c]*const void = operands[1].*.buffers;
+        const data0: [*]const f64 = @ptrFromInt(@intFromPtr(buf0[1]));
+        const data1: [*]const f64 = @ptrFromInt(@intFromPtr(buf1[1]));
+
+        // Allocate output
+        var out_alloc = allocator.alloc(f64, @intCast(len)) catch return AdapterError.AllocationFailed;
+        defer out_alloc = undefined;
+
+        if (std.mem.eql(u8, op_name, "add")) {
+            for (0..@intCast(len)) |i| {
+                out_alloc[i] = data0[i] + data1[i];
+            }
+        } else if (std.mem.eql(u8, op_name, "subtract")) {
+            for (0..@intCast(len)) |i| {
+                out_alloc[i] = data0[i] - data1[i];
+            }
+        } else if (std.mem.eql(u8, op_name, "multiply")) {
+            for (0..@intCast(len)) |i| {
+                out_alloc[i] = data0[i] * data1[i];
+            }
+        } else if (std.mem.eql(u8, op_name, "divide")) {
+            for (0..@intCast(len)) |i| {
+                if (data1[i] == 0) {
+                    allocator.free(out_alloc);
+                    return AdapterError.TypeMismatch;
+                }
+                out_alloc[i] = data0[i] / data1[i];
+            }
+        } else {
+            allocator.free(out_alloc);
+            return AdapterError.UndefinedOperation;
+        }
+
+        // Build output ArrowArray
+        const out_arr = allocator.create(ArrowArray) catch return AdapterError.AllocationFailed;
+        out_arr.* = ArrowArray{
+            .length = len,
+            .null_count = 0,
+            .offset = 0,
+            .n_buffers = 1,
+            .n_children = 0,
+            .buffers = @ptrCast(&out_alloc[0]),
+            .children = null,
+            .dictionary = null,
+            .release = null,
+            .private_data = null,
+        };
+
+        return ArrowComputeResult{
+            .output_array = out_arr,
+            .data = out_alloc,
+            .allocator = allocator,
+        };
+    }
+
+    /// Resolve a Yamori operation name to Arrow function name, then execute
+    pub fn resolveAndExecute(
+        yamori_op: []const u8,
+        operands: []const [*c]ArrowArray,
+        allocator: std.mem.Allocator,
+    ) AdapterError!ArrowComputeResult {
+        const arrow_func = try resolveArrowFunc(yamori_op);
+        return executeOperation(arrow_func, operands, allocator);
+    }
+};
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
@@ -1112,3 +1282,474 @@ test "multiple_cycles_detects_one: two separate cycles" {
 
     try expect(err == cycleDetector.CycleError.CycleDetected);
 }
+
+
+// ─── Arrow Adapter Tests ────────────────────────────────────────────────
+
+// Helper to build ArrowArrays from f64 data for testing
+// Each test gets its own heap-allocated buffers to avoid dangling pointers.
+fn buildArrowArray(
+    alloc: std.mem.Allocator,
+    data: []const f64,
+    format_str: []const u8,
+) !struct {
+    arrow_arr: arrowAdapter.ArrowArray,
+    data_buf: []f64,
+    buffers_array: []u64,
+    format_buf: []u8,
+} {
+    const data_buf = try alloc.dupe(f64, data);
+    errdefer alloc.free(data_buf);
+
+    // buffers_array stores 2 u64 values:
+    // [0] = 0 (null pointer for no validity bitmap)
+    // [1] = @intFromPtr(data_buf) (data pointer)
+    const buffers_array = try alloc.alloc(u64, 2);
+    errdefer alloc.free(buffers_array);
+
+    buffers_array[0] = 0;
+    buffers_array[1] = @intFromPtr(data_buf.ptr);
+
+    const fmt_buf = try alloc.dupe(u8, format_str);
+    errdefer alloc.free(fmt_buf);
+
+    // Cast the u64 array to [*c]*const void for the ArrowArray.buffers field
+    const buf_ptr: [*c]*const void = @ptrCast(buffers_array.ptr);
+
+    return .{
+        .arrow_arr = arrowAdapter.ArrowArray{
+            .length = @intCast(data.len),
+            .null_count = 0,
+            .offset = 0,
+            .n_buffers = 1,
+            .n_children = 0,
+            .buffers = buf_ptr,
+            .children = null,
+            .dictionary = null,
+            .release = null,
+            .private_data = null,
+        },
+        .data_buf = data_buf,
+        .buffers_array = buffers_array,
+        .format_buf = fmt_buf,
+    };
+}
+
+test "arrow_adapter: resolveArrowFunc('add') → 'add'" {
+    const result = try arrowAdapter.resolveArrowFunc("add");
+    try expectEqualStrings("add", result);
+}
+
+test "arrow_adapter: resolveArrowFunc('subtract') → 'subtract'" {
+    const result = try arrowAdapter.resolveArrowFunc("subtract");
+    try expectEqualStrings("subtract", result);
+}
+
+test "arrow_adapter: resolveArrowFunc('multiply') → 'multiply'" {
+    const result = try arrowAdapter.resolveArrowFunc("multiply");
+    try expectEqualStrings("multiply", result);
+}
+
+test "arrow_adapter: resolveArrowFunc('divide') → 'divide'" {
+    const result = try arrowAdapter.resolveArrowFunc("divide");
+    try expectEqualStrings("divide", result);
+}
+
+test "arrow_adapter: resolveArrowFunc('unknown') → UndefinedOperation" {
+    const result = arrowAdapter.resolveArrowFunc("unknown");
+    try expect(result == arrowAdapter.AdapterError.UndefinedOperation);
+}
+
+test "arrow_adapter: executeOperation(add) [1,2,3]+[4,5,6]=[5,7,9]" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 1, 2, 3 };
+    const b = [3]f64{ 4, 5, 6 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("add", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(@as(i64, 3), result.output_array.*.length);
+    try expectEqual(5.0, result.data[0]);
+    try expectEqual(7.0, result.data[1]);
+    try expectEqual(9.0, result.data[2]);
+}
+
+test "arrow_adapter: executeOperation(subtract) [10,20,30]-[1,2,3]=[9,18,27]" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 10, 20, 30 };
+    const b = [3]f64{ 1, 2, 3 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("subtract", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(9.0, result.data[0]);
+    try expectEqual(18.0, result.data[1]);
+    try expectEqual(27.0, result.data[2]);
+}
+
+test "arrow_adapter: executeOperation(multiply) [1,2,3]*[4,5,6]=[4,10,18]" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 1, 2, 3 };
+    const b = [3]f64{ 4, 5, 6 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("multiply", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(4.0, result.data[0]);
+    try expectEqual(10.0, result.data[1]);
+    try expectEqual(18.0, result.data[2]);
+}
+
+test "arrow_adapter: executeOperation(divide) [10,20,30]/[2,4,6]=[5,5,5]" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 10, 20, 30 };
+    const b = [3]f64{ 2, 4, 6 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("divide", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(5.0, result.data[0]);
+    try expectEqual(5.0, result.data[1]);
+    try expectEqual(5.0, result.data[2]);
+}
+
+test "arrow_adapter: executeOperation(divide) by zero → TypeMismatch" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 10, 20, 30 };
+    const b = [3]f64{ 2, 0, 6 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = arrowAdapter.executeOperation("divide", operands, allocator);
+    try expect(result == arrowAdapter.AdapterError.TypeMismatch);
+}
+
+test "arrow_adapter: executeOperation(empty_operands → TypeMismatch" {
+    const allocator = std.testing.allocator;
+
+    const data_a = [1]f64{ 1.0 };
+    const data_b = [1]f64{ 2.0 };
+
+    const arr_a = try buildArrowArray(allocator, data_a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    const arr_b = try buildArrowArray(allocator, data_b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    // Pass 0 operands (empty slice with correct type)
+    const empty_operands: []const [*c]arrowAdapter.ArrowArray = &.{};
+    const result = arrowAdapter.executeOperation("add", empty_operands, allocator);
+    try expect(result == arrowAdapter.AdapterError.TypeMismatch);
+}
+
+test "arrow_adapter: executeOperation(single_operand → TypeMismatch" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 1, 2, 3 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    // Pass 1 operand
+    const operands = &.{ &arr_a.arrow_arr };
+    const result = arrowAdapter.executeOperation("add", operands, allocator);
+    try expect(result == arrowAdapter.AdapterError.TypeMismatch);
+}
+
+test "arrow_adapter: executeOperation(undefined_op → UndefinedOperation" {
+    const allocator = std.testing.allocator;
+
+    const a = [2]f64{ 1, 2 };
+    const b = [2]f64{ 3, 4 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = arrowAdapter.executeOperation("power", operands, allocator);
+    try expect(result == arrowAdapter.AdapterError.UndefinedOperation);
+}
+
+test "arrow_adapter: resolveAndExecute(add) via comptime lookup" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 1, 2, 3 };
+    const b = [3]f64{ 4, 5, 6 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.resolveAndExecute("add", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(5.0, result.data[0]);
+    try expectEqual(7.0, result.data[1]);
+    try expectEqual(9.0, result.data[2]);
+}
+
+test "arrow_adapter: resolveAndExecute(subtract) via comptime lookup" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 10, 20, 30 };
+    const b = [3]f64{ 1, 2, 3 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.resolveAndExecute("subtract", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(9.0, result.data[0]);
+    try expectEqual(18.0, result.data[1]);
+    try expectEqual(27.0, result.data[2]);
+}
+
+test "arrow_adapter: resolveAndExecute(unknown_op → UndefinedOperation" {
+    const allocator = std.testing.allocator;
+
+    const a = [2]f64{ 1, 2 };
+    const b = [2]f64{ 3, 4 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = arrowAdapter.resolveAndExecute("power", operands, allocator);
+    try expect(result == arrowAdapter.AdapterError.UndefinedOperation);
+}
+
+test "arrow_adapter: computeResultFree does not leak" {
+    const allocator = std.testing.allocator;
+
+    const a = [3]f64{ 1, 2, 3 };
+    const b = [3]f64{ 4, 5, 6 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("add", operands, allocator);
+    arrowAdapter.computeResultFree(result);
+}
+
+test "arrow_adapter: executeOperation(negative_values_add) [-1,-2]+[3,4]=[2,2]" {
+    const allocator = std.testing.allocator;
+
+    const a = [2]f64{ -1, -2 };
+    const b = [2]f64{ 3, 4 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("add", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(2.0, result.data[0]);
+    try expectEqual(2.0, result.data[1]);
+}
+
+test "arrow_adapter: executeOperation(small_decimal_values) [0.1,0.2]+[0.3,0.4]" {
+    const allocator = std.testing.allocator;
+
+    const a = [2]f64{ 0.1, 0.2 };
+    const b = [2]f64{ 0.3, 0.4 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("add", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expect(@abs(result.data[0] - 0.4) < 1e-9);
+    try expect(@abs(result.data[1] - 0.6) < 1e-9);
+}
+
+test "arrow_adapter: executeOperation(large_values) [1e10,1e10]+[1e10,1e10]=[2e10,2e10]" {
+    const allocator = std.testing.allocator;
+
+    const a = [2]f64{ 1e10, 1e10 };
+    const b = [2]f64{ 1e10, 1e10 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("add", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(2e10, result.data[0]);
+    try expectEqual(2e10, result.data[1]);
+}
+
+test "arrow_adapter: executeOperation(single_element) [5.0]+[3.0]=[8.0]" {
+    const allocator = std.testing.allocator;
+
+    const a = [1]f64{ 5.0 };
+    const b = [1]f64{ 3.0 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("add", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(@as(i64, 1), result.output_array.*.length);
+    try expectEqual(8.0, result.data[0]);
+}
+
+test "arrow_adapter: executeOperation(mismatched_length → uses first operand length" {
+    const allocator = std.testing.allocator;
+
+    // V1.1 uses first operand's length
+    const a = [2]f64{ 1, 2 };
+    const b = [3]f64{ 4, 5, 6 };
+
+    var arr_a = try buildArrowArray(allocator, a[0..], "d");
+    defer allocator.free(arr_a.data_buf);
+    defer allocator.free(arr_a.buffers_array);
+    defer allocator.free(arr_a.format_buf);
+
+    var arr_b = try buildArrowArray(allocator, b[0..], "d");
+    defer allocator.free(arr_b.data_buf);
+    defer allocator.free(arr_b.buffers_array);
+    defer allocator.free(arr_b.format_buf);
+
+    const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
+    const result = try arrowAdapter.executeOperation("add", operands, allocator);
+    defer arrowAdapter.computeResultFree(result);
+
+    try expectEqual(@as(i64, 2), result.output_array.*.length);
+}
+
