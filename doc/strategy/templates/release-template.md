@@ -1,16 +1,16 @@
 <!--
-Tickoni release notes template.
+Yamori release notes template.
 
 Use this template for roadmap release documents under
 `doc/strategy/roadmap/releases/`.
 
 This template is based on `doc/strategy/roadmap/releases/m1.md`, which is the
-current source of truth for how Tickoni release notes are written:
+current source of truth for how Yamori release notes are written:
 
 1. Start with a short "What Progressed In The Story" recap.
 2. State plainly what the user can do now.
 3. Offer a jump link for readers who want the changelog first.
-4. Continue the Tickoni story with an "Episode" section.
+4. Continue the Yamori story with an "Episode" section.
 5. Switch into concrete release notes with grouped sections:
    - Headline Features
    - Governance and Safety
@@ -52,7 +52,7 @@ How to build the content from roadmap work:
 
 Writing rules:
   - Keep the opening progress recap short and user-facing.
-  - Keep the story episode as a continuation of the Tickoni lore, not as a
+  - Keep the story episode as a continuation of the Yamori lore, not as a
     marketing slogan dump.
   - Keep the release notes concrete and evidence-friendly.
   - Do not get lost in detail. Highlight only the most important, wow-level
@@ -69,7 +69,7 @@ Read before filling:
   - `doc/knowledge/architecture.md`
   - `doc/knowledge/tile-topology.md` when platform/runtime work is included
   - `doc/execution/development.md`
-  - `doc/execution/testing-tickoni.md`
+  - `doc/execution/testing-yamori.md`
 -->
 
 ## What Progressed In The Story
@@ -84,11 +84,11 @@ The user can now:
 * [understand why something was allowed, denied, resized, or blocked]
 * [replay, review, approve, or verify a result]
 
-**Want the changelog first? [Skip the Tickoni story and jump to the release notes ↓](#actual-release-notes)**
+**Want the changelog first? [Skip the Yamori story and jump to the release notes ↓](#actual-release-notes)**
 
 ## Episode [XX]: [Release Name]
 
-[Continue the Tickoni story here. Keep it short-to-medium length and connected
+[Continue the Yamori story here. Keep it short-to-medium length and connected
 to the actual release outcome.]
 
 [Suggested shape:
@@ -96,7 +96,7 @@ Previously, in the [prior story location or state]...
 
 [Set the scene.]
 [Show the user's old frustration or limit.]
-[Introduce what Tickoni can do differently now.]
+[Introduce what Yamori can do differently now.]
 [End on the specific contract this release proves.]
 ]
 

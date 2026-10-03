@@ -1,5 +1,5 @@
 <!--
-Tickoni epic issue template.
+Yamori epic issue template.
 
 Use this template for a GitHub issue labeled `type/epic`.
 
@@ -48,13 +48,13 @@ Epic quality standard:
 Read before filling:
   - doc/strategy/templates/status-template.md for epic, story, and task status
     definitions.
-  - doc/strategy/README.md for product identity and what Tickoni is not.
+  - doc/strategy/README.md for product identity and what Yamori is not.
   - doc/knowledge/architecture.md for runtime layers, tile ownership, event
     flow, and attached systems.
   - doc/strategy/capabilities.md for finance-native capability scope and
     policy outcomes.
   - doc/knowledge/tile-topology.md when the epic may affect tile ownership,
-    topology, links, or Firedancer reuse.
+    |topology, links, or C substrate reuse.
   - doc/execution/security.md when the epic affects agent authority, tool access,
     secrets, replay divergence, or privileged action boundaries.
   - doc/execution/observability.md and doc/execution/telemetry.md when the epic
@@ -75,7 +75,7 @@ Read before filling:
 
 <!--
 Describe the product/customer problem and the outcome this epic closes. For
-Tickoni, lead with consumer-money or operator trust outcomes, then mention
+Yamori, lead with consumer-money or operator trust outcomes, then mention
 runtime/control-plane consequences.
 -->
 
@@ -129,7 +129,7 @@ landing in the same issue.
 Mark each boundary as Applies, N/A, or Decision needed. Add links to story
 issues or docs where the detail lives. Do not invent policy, storage,
 execution, tile ownership, or API semantics inside the epic without a decision.
-Use doc/architecture.md and doc/contribution/tickoni.md for runtime boundaries;
+Use doc/architecture.md and doc/contribution/yamori.md for runtime boundaries;
 use doc/security.md for no-bypass and fail-closed expectations; use
 doc/observability.md and doc/telemetry.md for metrics/diagnostics expectations.
 -->
@@ -261,7 +261,7 @@ child story acceptance criteria and evidence gates.
 <!--
 Answer only the questions that apply. Use `N/A - reason` instead of forcing
 every epic through topology or tool-broker evidence.
-Use doc/strategy/positioning.md to tie the answer back to Tickoni's unique
+Use doc/strategy/positioning.md to tie the answer back to Yamori's unique
 value proposition: high-throughput agentic finance, consequence isolation,
 bounded spend, hard policy gates, and forensic replay.
 -->
@@ -269,8 +269,8 @@ bounded spend, hard policy gates, and forensic replay.
 - What can the user or operator do now that they could not before this epic?
 - What changed from the previous roadmap increment?
 - What is this epic's wow-effect: the visible moment in this epic's demo or
-  workflow that makes Tickoni feel unlike a generic agent harness?
-- How does this epic progress Tickoni's unique value proposition from
+  workflow that makes Yamori feel unlike a generic agent harness?
+- How does this epic progress Yamori's unique value proposition from
   doc/strategy/positioning.md: speed, isolation/control, spend governance,
   policy-gated action, and forensic replay?
 - Which demo command or CaseOps flow closes the epic?

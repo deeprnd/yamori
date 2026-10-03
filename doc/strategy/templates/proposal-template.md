@@ -1,8 +1,8 @@
 <!--
-Tickoni backlog proposal template.
+Yamori backlog proposal template.
 
 Use this template when an idea is not ready to become an epic or story yet.
-A backlog proposal answers: why does this belong in Tickoni?
+A backlog proposal answers: why does this belong in Yamori?
 
 It should be product-fit first, implementation-light. Do not turn this into an
 acceptance-criteria document. If the proposal is accepted, graduate it into an
@@ -22,11 +22,11 @@ epic or story using the relevant template.
 
 ## Product Fit Thesis
 
-This fits Tickoni because [explain why the idea advances financial control, policy-gated proposals, auditability, replayability, bounded spend, high-throughput CaseOps, or safe money-adjacent action].
+This fits Yamori because [explain why the idea advances financial control, policy-gated proposals, auditability, replayability, bounded spend, high-throughput CaseOps, or safe money-adjacent action].
 
-It is not just [generic automation / generic agent UX / trading performance / developer productivity / dashboard polish] because [explain the Tickoni-specific consequence, control surface, or operator trust outcome].
+It is not just [generic automation / generic agent UX / trading performance / developer productivity / dashboard polish] because [explain the Yamori-specific consequence, control surface, or operator trust outcome].
 
-## Tickoni Fit Checklist
+## Yamori Fit Checklist
 
 | Fit question                                                                                                                                            | Answer |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
@@ -44,11 +44,11 @@ It is not just [generic automation / generic agent UX / trading performance / de
 
 ## Current Gap
 
-[Explain what Tickoni cannot yet show, enforce, prove, or route. Keep this separate from implementation design.]
+[Explain what Yamori cannot yet show, enforce, prove, or route. Keep this separate from implementation design.]
 
 ## Proposed Product Behavior
 
-When [actor] is in [workflow/context], Tickoni should [visible behavior], so that [trust/control/replay outcome].
+When [actor] is in [workflow/context], Yamori should [visible behavior], so that [trust/control/replay outcome].
 
 Expected behavior:
 
@@ -65,7 +65,7 @@ Expected behavior:
 ```text
 Given:  [financial event, intent, case, policy, or operator context]
 When:   [the user, operator, or agent attempts the workflow]
-Then:   [Tickoni-visible result: proposal, denial, approval-required state, evidence packet, replay proof, impact view, etc.]
+Then:   [Yamori-visible result: proposal, denial, approval-required state, evidence packet, replay proof, impact view, etc.]
 ```
 
 ## Product Boundaries
@@ -125,7 +125,7 @@ This should not move forward if:
 * it encourages autonomous money movement, ledger posting, payout approval, account freezing, or risk override
 * it makes trading performance, alpha, PnL, rank, or gamification the dominant product object
 * it cannot identify the relevant policy, approval, evidence, or replay boundary
-* it requires live external side effects before Tickoni has a safe paper/sandbox path
+* it requires live external side effects before Yamori has a safe paper/sandbox path
 * it duplicates an epic/story that already covers the same outcome
 
 ## Open Decisions

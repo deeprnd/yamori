@@ -1,5 +1,5 @@
 <!--
-Tickoni issue status reference.
+Yamori issue status reference.
 
 Use this file when filling epic, story, and task issue templates. Status is not
 a GitHub label in this template set; it is an explicit field in the issue body.
@@ -15,7 +15,7 @@ Important story rule:
   should not exist yet.
 -->
 
-# Tickoni Issue Statuses
+# Yamori Issue Statuses
 
 ## Shared Status Enum
 

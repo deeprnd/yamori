@@ -1,5 +1,5 @@
 <!--
-Tickoni story issue template.
+Yamori story issue template.
 
 Use this template for a GitHub issue labeled `story`.
 
@@ -50,8 +50,8 @@ GitHub label guidance for story creation:
     as `duplicate`, `invalid`, `question`, or `wontfix`.
 
 Conditional guidance:
-  - Include topology/link acceptance only when the story changes Tickoni tile
-    ownership, queues, workspaces, links, lifecycle, or Firedancer integration.
+  - Include topology/link acceptance only when the story changes Yamori tile
+    |ownership, queues, workspaces, links, lifecycle, or C substrate integration.
   - Include capability/policy acceptance only when the story changes financial
     authority, policy outcomes, approval rules, limits, or scope dimensions.
   - Include audit/replay acceptance only when the story changes material events,
@@ -71,11 +71,11 @@ Read before filling:
     non-goals.
   - doc/knowledge/architecture.md for the runtime model, source-of-truth
     boundaries, tile responsibilities, and replay/audit constraints.
-  - doc/execution/contribution/tickoni.md for Zig runtime style, Firedancer
-    substrate reuse, C ABI boundaries, and separation rules.
+  - doc/execution/contribution/yamori.md for Zig runtime style, C substrate
+    reuse, C ABI boundaries, and separation rules.
   - doc/execution/build.md and doc/execution/development.md for repo-facing
     build/run commands and justfile command policy.
-  - doc/execution/testing-tickoni.md and doc/execution/ci.md for test layer
+  - doc/execution/testing-yamori.md and doc/execution/ci.md for test layer
     selection and CI gates.
   - doc/execution/security.md for fail-closed behavior, no-bypass expectations,
     and agent/tool capability boundaries.
@@ -104,7 +104,7 @@ safer after this story is done.
 Use standard product format:
 As a [actor], I want [capability], so that [benefit].
 
-Tickoni actors are usually consumer-money user, CaseOps operator, reviewer,
+Yamori actors are usually consumer-money user, CaseOps operator, reviewer,
 agent operator, developer/operator, compliance/risk reviewer, or runtime owner.
 -->
 
@@ -141,9 +141,9 @@ fixture, or artifact.
 Use the project docs to make acceptance concrete:
   - Product behavior: doc/strategy/README.md.
   - Runtime/tile behavior: doc/knowledge/architecture.md and
-    doc/execution/contribution/tickoni.md.
+    doc/execution/contribution/yamori.md.
   - Build/run behavior: doc/execution/build.md and doc/execution/development.md.
-  - Tests and CI impact: doc/execution/testing-tickoni.md and
+  - Tests and CI impact: doc/execution/testing-yamori.md and
     doc/execution/ci.md.
   - Security/fail-closed behavior: doc/execution/security.md.
   - Metrics/diagnostics evidence: doc/execution/observability.md and
@@ -178,7 +178,7 @@ hash-chain behavior, replay capsules, divergence checks, or replay substitution.
 
 <!-- Applies when changing tile IDs, tile ownership, links, workspaces, queue
 depths, reliability, overrun behavior, restart behavior, shutdown behavior, or
-Firedancer infrastructure integration. -->
+|<!-- C substrate infrastructure integration. -->
 
 - [ ] [N/A - reason, or topology acceptance criterion]
 
@@ -224,7 +224,7 @@ Task creation rules:
         replay artifacts, Config / manifest handling, Docs / roadmap
         reconciliation); mark unused sections `N/A - reason`.
       * A `Verification` section listing exact checks (focused test commands,
-        `just test-unit-tk`, `just test-integration-tk`, demo commands).
+        `just test-unit-tk`, `just test-integration-ym`, demo commands).
       * An `Evidence To Attach` section for test output, demo output, fixture
         paths, audit samples, replay samples, or linked artifacts.
       * A `Done Criteria` section confirming the scoped change is implemented,
@@ -234,11 +234,11 @@ Task creation rules:
         financial authority changed.
   - Each task must link back to the parent story's acceptance criteria and
     to the relevant execution docs it must follow:
-      * `doc/execution/contribution/tickoni.md` — Zig/runtime style, Firedancer
+      * `doc/execution/contribution/yamori.md` — Zig/runtime style, C substrate
         reuse, C ABI rules, separation constraints.
       * `doc/execution/build.md` and `doc/execution/development.md` — build/run
         commands, justfile policy.
-      * `doc/execution/testing-tickoni.md` and `doc/execution/ci.md` — test
+      * `doc/execution/testing-yamori.md` and `doc/execution/ci.md` — test
         layer selection, CI gates.
       * `doc/execution/security.md` — fail-closed behavior, no-bypass
         expectations, static/preallocated-memory discipline, C/Zig memory and
@@ -256,16 +256,16 @@ Task creation rules:
 Task ordering and purpose (fixed across all stories):
 
 VX.Y.SN.T1 — Architecture and planning. Define the architectural fit of this
-story within the existing tile topology and Firedancer substrate. Identify risks,
+|story within the existing tile topology and C substrate.
 known unknowns, and decisions that must be resolved before implementation. This
 task must name the tiles, links, workspaces, and capability scope the story will
-touch, flag any tile ownership, link shape, or Firedancer integration changes,
+|touch, flag any tile ownership, link shape, or C substrate integration changes,
 and record every open question. Do not start implementation until this task
 blocks no remaining implementation task.
 
 VX.Y.SN.T2 — Domain-Driven Design and scaffolding. Write out the types, structs,
 tagged unions, enums, and comptime tables the story requires, following
-`doc/execution/contribution/tickoni.md`. Define the input and output shapes for
+`doc/execution/contribution/yamori.md`. Define the input and output shapes for
 every function the story will implement — these must be finalised objects/structs
 that cross trust boundaries. Implement scaffold functions with `NotImplemented`
 errors and `log.warn` calls only. No production logic yet. This task establishes
@@ -273,7 +273,7 @@ the compile-time surface the story will build on.
 
 VX.Y.SN.T3 — Test-Driven Design: write tests, then stub implementation. Write
 full unit and integration tests (following
-`doc/execution/testing-tickoni.md`) against the scaffolding from T2. Then lightly
+`doc/execution/testing-yamori.md`) against the scaffolding from T2. Then lightly
 implement the scaffolding methods with correct hardcoded return values and a
 `// TODO: implement` comment, plus a `log.warn` line. At this point every input
 and output shape is finalised as concrete structs, so any dependency issues,
@@ -299,7 +299,7 @@ model/tool/adapter boundary, and API/UI surface as applicable. Each task must
 follow the task structure described above and point to the acceptance criteria
 it closes.
 
-VX.Y.SN.T10 — Maintainability audit. Audit the story's code (branch changes vs main) against `doc/execution/contribution/tickoni.md` and the ISO/IEC 25010 maintainability
+VX.Y.SN.T10 — Maintainability audit. Audit the story's code (branch changes vs main) against `doc/execution/contribution/yamori.md` and the ISO/IEC 25010 maintainability
 characteristics: modularity, reusability, analysability, modifiability, and
 testability. Review cohesion and coupling, separation of concerns, API and
 ownership boundaries, naming and documentation, duplication, unnecessary
@@ -354,15 +354,15 @@ screenshots, API examples, generated artifacts, or docs.
 Use the narrowest meaningful checks. Add broader gates when the story touches
 shared runtime behavior, security boundaries, or public contracts.
 
-Use doc/testing-tickoni.md for test selection. Use doc/ci.md to understand
+Use doc/testing-yamori.md for test selection. Use doc/ci.md to understand
 which GitHub Actions lanes are expected to cover the changed paths. Use
 doc/development.md for the rule that repo-facing commands belong in the
-justfile, not upstream Firedancer Makefiles.
+|justfile, not upstream Makefiles.
 -->
 
 - [ ] Focused tests for changed behavior pass.
-- [ ] `just test-unit-tk` passes when Tickoni runtime code changes.
-- [ ] `just test-integration-tk` passes when cross-tile, API, replay, adapter,
+- [ ] `just test-unit-tk` passes when Yamori runtime code changes.
+- [ ] `just test-integration-ym` passes when cross-tile, API, replay, adapter,
       or fixture behavior changes.
 - [ ] `just test-demo-tk` or the story-specific demo command prints the required
       scenario when this story changes a demoable product flow.

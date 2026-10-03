@@ -1,5 +1,5 @@
 <!--
-Tickoni tech-debt item template.
+Yamori tech-debt item template.
 
 Use for one narrow, ready-to-implement debt item.
 State the concrete problem, list explicit file paths, and add clear done

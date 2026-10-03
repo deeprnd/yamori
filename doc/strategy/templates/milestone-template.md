@@ -1,5 +1,5 @@
 <!--
-Tickoni milestone template.
+Yamori milestone template.
 
 Use this template for a GitHub issue labeled `milestone`.
 
@@ -43,9 +43,9 @@ Read before filling:
     non-goals.
   - doc/knowledge/architecture.md for the runtime model, source-of-truth
     boundaries, and tile responsibilities.
-  - doc/strategy/positioning.md for Tickoni's unique value proposition.
+  - doc/strategy/positioning.md for Yamori's unique value proposition.
   - doc/execution/development.md for build/run commands.
-  - doc/execution/testing-tickoni.md for test layer selection.
+  - doc/execution/testing-yamori.md for test layer selection.
   - doc/execution/security.md for fail-closed behavior.
   - doc/execution/observability.md and doc/execution/telemetry.md for
     metrics, diagnostics, and operator-visible evidence.
@@ -90,7 +90,7 @@ Scoping rules for epics:
      epic with 6 stories and 36 tasks. Split that into separate epics for
      intent/schema, snapshots, ticketing, policy, order lifecycle, and
      demo/replay.
-  3. Epics that touch different Tickoni capability boundaries should be
+  3. Epics that touch different Yamori capability boundaries should be
      separate: guard/allowlist, risk scoring, policy enforcement, ticket
      generation, order lifecycle, and demo/replay each earn their own epic.
   4. Do not group by "product" vs "platform" unless the platform change
@@ -172,9 +172,9 @@ Pattern:
   3. Trust signal — the counterintuitive insight that makes this a milestone
 
 Example:
-  "People don't trust systems — they trust proof. M0 is where Tickoni stops
+  "People don't trust systems — they trust proof. M0 is where Yamori stops
   being code and starts being a system that can prove it works every time.
-  It's not a feature — it's the first claim Tickoni makes on trust."
+  It's not a feature — it's the first claim Yamori makes on trust."
 
 Rules:
   - No technical detail: "tiles move to supervisor processes" is HOW, not WHY
