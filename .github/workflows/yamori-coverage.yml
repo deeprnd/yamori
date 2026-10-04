@@ -1,3 +1,4 @@
+---
 name: Yamori Coverage Validation
 
 'on':
@@ -28,7 +29,11 @@ jobs:
 
       - name: Generate coverage summary
         run: |
-          python3 contrib/tool/coverage_report.py coverage-yamori             build/yamori-cov/kcov/merged             build/yamori-cov/coverage-summary.json             --config contrib/test/coverage-yamori.json
+          python3 contrib/tool/coverage_report.py \
+            coverage-yamori \
+            build/yamori-cov/kcov/merged \
+            build/yamori-cov/coverage-summary.json \
+            --config contrib/test/coverage-yamori.json
 
       - name: Upload coverage results
         uses: actions/upload-artifact@v4
