@@ -48,7 +48,7 @@ if [ "$JOB" = "coverage-yamori" ]; then
     find "$COV_CACHE_BINS" -maxdepth 2 -type f -name 'yamori-*-tests' | sort | while read -r bin; do
         name="$(basename "$bin")"
         log "Running kcov on $name"
-        kcov --include-pattern=src/main.zig \
+        kcov --include-pattern=src/*.zig \
             "${COV_RAW}"/"$name" \
             "$bin" || true
     done
