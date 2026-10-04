@@ -56,4 +56,36 @@ pub const CapabilityRegistry = struct {
     pub fn count(self: *const CapabilityRegistry) usize {
         return self.capabilities.count();
     }
+
+    /// Serialize the registry to a JSON string.
+    pub fn toJson(self: *const CapabilityRegistry, gpa: std.mem.Allocator) ![]u8 {
+        var buf = try std.ArrayList(u8).initCapacity(gpa, 0);
+        errdefer buf.deinit(gpa);
+
+        try buf.appendSlice(gpa, "{\"capabilities\":[");
+
+        var first = true;
+        var it = self.capabilities.iterator();
+        while (it.next()) |entry| {
+            if (!first) try buf.appendSlice(gpa, ",");
+            first = false;
+            const ver_buf = blk: {
+                var tmp: [20]u8 = undefined;
+                break :blk std.fmt.bufPrint(&tmp, "{d}", .{entry.value_ptr.version}) catch "0";
+            };
+            const tag = @tagName(entry.value_ptr.backend_selector);
+            try buf.appendSlice(gpa, "{\"name\":\"");
+            try buf.appendSlice(gpa, entry.value_ptr.name);
+            try buf.appendSlice(gpa, "\",\"version\":");
+            try buf.appendSlice(gpa, ver_buf);
+            try buf.appendSlice(gpa, ",\"description\":\"");
+            try buf.appendSlice(gpa, entry.value_ptr.description);
+            try buf.appendSlice(gpa, "\",\"backend_selector\":\"");
+            try buf.appendSlice(gpa, tag);
+            try buf.appendSlice(gpa, "\"}");
+        }
+
+        try buf.appendSlice(gpa, "]}");
+        return buf.toOwnedSlice(gpa);
+    }
 };

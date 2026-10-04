@@ -3429,3 +3429,98 @@ test "provenance: all_provenance_built" {
     try expectEqualStrings("B", prov_c.chain.items[1]);
     try expectEqualStrings("C", prov_c.chain.items[2]);
 }
+
+// ─── Registry Serialization Tests (Task 4) ─────────────────────────────
+
+test "CapabilityRegistry toJson round-trip" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    const cap = Capability.init(
+        gpa,
+        "sum",
+        1,
+        "Sum elements",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+        .arrow,
+    );
+    try reg.register(cap);
+
+    const json = try reg.toJson(gpa);
+    defer gpa.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"sum\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"version\":1") != null);
+}
+
+test "CapabilityRegistry toJson includes description and backend" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    const cap = Capability.init(
+        gpa,
+        "mean",
+        2,
+        "Compute mean value",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+        .gsl,
+    );
+    try reg.register(cap);
+
+    const json = try reg.toJson(gpa);
+    defer gpa.free(json);
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"description\":\"Compute mean value\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"backend_selector\":\"gsl\"") != null);
+}
+
+test "CapabilityRegistry toJson multiple capabilities" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    const cap1 = Capability.init(
+        gpa,
+        "add",
+        1,
+        "Addition",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .arrow,
+    );
+    try reg.register(cap1);
+
+    const cap2 = Capability.init(
+        gpa,
+        "multiply",
+        1,
+        "Multiplication",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .gsl,
+    );
+    try reg.register(cap2);
+
+    const json = try reg.toJson(gpa);
+    defer gpa.free(json);
+
+    // Both entries must be present
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"add\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"multiply\"") != null);
+}
+
+test "CapabilityRegistry toJson empty registry" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    const json = try reg.toJson(gpa);
+    defer gpa.free(json);
+
+    // Should produce {"capabilities":[]}
+    try std.testing.expect(std.mem.eql(u8, json, "{\"capabilities\":[]}"));
+}
