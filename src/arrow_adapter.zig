@@ -2,6 +2,14 @@
 
 const std = @import("std");
 
+pub const ArrowError = error{
+    FunctionNotFound,
+    InvalidDataType,
+    InvalidInputLength,
+    ComputeFailed,
+    NullInput,
+};
+
 pub const ArrowComputeMap = struct {
     const Entry = struct {
         capability_name: []const u8,
