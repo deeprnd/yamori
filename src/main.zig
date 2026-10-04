@@ -1,4 +1,10 @@
 const std = @import("std");
+const capability = @import("capability.zig");
+pub const Capability = capability.Capability;
+pub const TypeDescriptor = capability.TypeDescriptor;
+pub const CapabilityCategory = capability.CapabilityCategory;
+pub const ElementType = capability.ElementType;
+pub const BackendSelector = capability.BackendSelector;
 
 pub const formula = struct {
     pub const NamedFormula = struct {
@@ -926,6 +932,66 @@ pub const arrowAdapter = struct {
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
+
+// ─── Capability Tests ─────────────────────────────────────────────────────
+
+test "Capability.init creates valid capability" {
+    const gpa = std.testing.allocator;
+    const cap = Capability.init(
+        gpa,
+        "add",
+        1,
+        "Element-wise addition",
+        &.{
+            TypeDescriptor{ .category = .vector, .element_type = .f64 },
+            TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        },
+        TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .arrow,
+    );
+    defer cap.deinit(gpa);
+
+    try std.testing.expect(std.mem.eql(u8, cap.name, "add"));
+    try std.testing.expectEqual(@as(u32, 1), cap.version);
+    try std.testing.expectEqual(@as(u32, 2), cap.input_types.len);
+    try std.testing.expectEqual(@tagName(cap.backend_selector), "arrow");
+}
+
+test "Capability.init stores description correctly" {
+    const gpa = std.testing.allocator;
+    const cap = Capability.init(
+        gpa,
+        "mean",
+        2,
+        "Compute arithmetic mean",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+        .gsl,
+    );
+    defer cap.deinit(gpa);
+
+    try std.testing.expectEqualStrings("mean", cap.name);
+    try std.testing.expectEqualStrings("Compute arithmetic mean", cap.description);
+    try std.testing.expectEqual(@as(u32, 2), cap.version);
+    try std.testing.expectEqualStrings("gsl", @tagName(cap.backend_selector));
+}
+
+test "Capability.init with empty input_types" {
+    const gpa = std.testing.allocator;
+    const cap = Capability.init(
+        gpa,
+        "constant",
+        1,
+        "Returns a constant value",
+        &.{},
+        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+        .default,
+    );
+    defer cap.deinit(gpa);
+
+    try std.testing.expectEqual(@as(u32, 0), cap.input_types.len);
+    try std.testing.expectEqualStrings("default", @tagName(cap.backend_selector));
+}
 
 // ─── Dependency Resolver Tests ──────────────────────────────────────────
 
