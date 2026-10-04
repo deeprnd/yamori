@@ -22,46 +22,26 @@ zig-test step:
 		zig build {{ step }} {{ ZIG_TEST_OPTS }})
 
 # ── Subsystem test recipes ────────────────────────────────────────────────────
+# Only linux-x86 recipes here; linux-arm aliases forward below.
 test-formula-linux-x86:
-	zig-test test-formula
-
-test-formula-linux-arm:
 	zig-test test-formula
 
 test-registry-linux-x86:
 	zig-test test-registry
 
-test-registry-linux-arm:
-	zig-test test-registry
-
 test-cycle-linux-x86:
-	zig-test test-cycle
-
-test-cycle-linux-arm:
 	zig-test test-cycle
 
 test-dep-resolve-linux-x86:
 	zig-test test-dep-resolve
 
-test-dep-resolve-linux-arm:
-	zig-test test-dep-resolve
-
 test-arrow-linux-x86:
-	zig-test test-arrow
-
-test-arrow-linux-arm:
 	zig-test test-arrow
 
 test-result-linux-x86:
 	zig-test test-result
 
-test-result-linux-arm:
-	zig-test test-result
-
 test-provenance-linux-x86:
-	zig-test test-provenance
-
-test-provenance-linux-arm:
 	zig-test test-provenance
 
 # ── Bare dispatchers ──────────────────────────────────────────────────────────
@@ -76,7 +56,7 @@ test-formula:
 	set -euo pipefail
 	case "{{ os }}-{{ arch }}" in
 		linux-x86) just test-formula-linux-x86 ;;
-		linux-arm) just test-formula-linux-arm ;;
+		linux-arm) just test-formula-linux-x86 ;;
 		*) echo "unsupported platform: {{ os }}-{{ arch }}" >&2; exit 1 ;;
 	esac
 
@@ -85,7 +65,7 @@ test-registry:
 	set -euo pipefail
 	case "{{ os }}-{{ arch }}" in
 		linux-x86) just test-registry-linux-x86 ;;
-		linux-arm) just test-registry-linux-arm ;;
+		linux-arm) just test-registry-linux-x86 ;;
 		*) echo "unsupported platform: {{ os }}-{{ arch }}" >&2; exit 1 ;;
 	esac
 
@@ -94,7 +74,7 @@ test-cycle:
 	set -euo pipefail
 	case "{{ os }}-{{ arch }}" in
 		linux-x86) just test-cycle-linux-x86 ;;
-		linux-arm) just test-cycle-linux-arm ;;
+		linux-arm) just test-cycle-linux-x86 ;;
 		*) echo "unsupported platform: {{ os }}-{{ arch }}" >&2; exit 1 ;;
 	esac
 
@@ -103,7 +83,7 @@ test-dep-resolve:
 	set -euo pipefail
 	case "{{ os }}-{{ arch }}" in
 		linux-x86) just test-dep-resolve-linux-x86 ;;
-		linux-arm) just test-dep-resolve-linux-arm ;;
+		linux-arm) just test-dep-resolve-linux-x86 ;;
 		*) echo "unsupported platform: {{ os }}-{{ arch }}" >&2; exit 1 ;;
 	esac
 
@@ -112,7 +92,7 @@ test-arrow:
 	set -euo pipefail
 	case "{{ os }}-{{ arch }}" in
 		linux-x86) just test-arrow-linux-x86 ;;
-		linux-arm) just test-arrow-linux-arm ;;
+		linux-arm) just test-arrow-linux-x86 ;;
 		*) echo "unsupported platform: {{ os }}-{{ arch }}" >&2; exit 1 ;;
 	esac
 
@@ -121,7 +101,7 @@ test-result:
 	set -euo pipefail
 	case "{{ os }}-{{ arch }}" in
 		linux-x86) just test-result-linux-x86 ;;
-		linux-arm) just test-result-linux-arm ;;
+		linux-arm) just test-result-linux-x86 ;;
 		*) echo "unsupported platform: {{ os }}-{{ arch }}" >&2; exit 1 ;;
 	esac
 
@@ -130,7 +110,7 @@ test-provenance:
 	set -euo pipefail
 	case "{{ os }}-{{ arch }}" in
 		linux-x86) just test-provenance-linux-x86 ;;
-		linux-arm) just test-provenance-linux-arm ;;
+		linux-arm) just test-provenance-linux-x86 ;;
 		*) echo "unsupported platform: {{ os }}-{{ arch }}" >&2; exit 1 ;;
 	esac
 
