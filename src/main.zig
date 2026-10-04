@@ -810,8 +810,11 @@ pub const arrowAdapter = struct {
     pub fn validateFloat64Arrays(_operands: []const *ArrowArray) AdapterError!void {
         for (_operands) |arr| {
             // Check that buffers pointer is non-null (required for data access)
-            if (arr.*.buffers == null) return AdapterError.TypeMismatch;
+            if (arr.*.buffers == null) {
+                return AdapterError.TypeMismatch;
+            }
         }
+        return;
     }
 
     /// Execute a formula operation on Arrow float64 arrays.
@@ -1860,21 +1863,27 @@ pub const ValuationError = error{
     NotFound,
 };
 
-/// Free a ResultFrame — frees all ArrowArray structs, their data buffers, and buffers_holder arrays.
+/// Free a ResultFrame — frees all ArrowArray structs, data buffers, buffers_holder arrays,
+/// and StringHashMap keys. Keys are shared across maps so only freed once (from `results`).
 pub fn resultFrameFree(frame: *ResultFrame) void {
     const alloc = frame.allocator;
+
+    // Free ArrowArray values and their keys in results map
     var it = frame.results.iterator();
     while (it.next()) |entry| {
         alloc.destroy(entry.value_ptr.*);
+        alloc.free(entry.key_ptr.*); // only free keys once (shared across maps)
     }
     frame.results.deinit();
 
+    // Free data slices only (keys already freed above)
     var dit = frame.result_data.iterator();
     while (dit.next()) |entry| {
         alloc.free(entry.value_ptr.*);
     }
     frame.result_data.deinit();
 
+    // Free buffers_holder arrays only (keys already freed above)
     var bit = frame.buffers_holders.iterator();
     while (bit.next()) |entry| {
         if (entry.value_ptr.*) |bufs| {
@@ -1888,6 +1897,11 @@ pub fn resultFrameFree(frame: *ResultFrame) void {
 /// formula via the Arrow adapter, collect results into ResultFrame.
 /// Fail-closed: any error frees all prior results and returns the error.
 /// Returns a heap-allocated *ResultFrame to avoid StringHashMap copy-on-return.
+///
+/// Ownership model: frame.results owns the ArrowArray pointers stored there.
+/// The resultFrameFree() function will destroy() those pointers. Caller-owned
+/// source arrays must NOT be stored directly — they must be copied if needed
+/// for multi-operand formulas.
 pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
     const alloc = input.allocator;
     const frame = alloc.create(ResultFrame) catch return ValuationError.AllocationFailed;
@@ -1907,6 +1921,24 @@ pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
     };
     defer dependencyResolver.resolveResultFree(resolve_result);
 
+    // Allocate reusable buffers outside the loop to avoid per-iteration deferred cleanup.
+    var operand_ptrs: std.ArrayListUnmanaged(*arrowAdapter.ArrowArray) = .empty;
+    var operand_owned: std.ArrayListUnmanaged(bool) = .empty;
+    var cleanup_done = false;
+    errdefer {
+        if (!cleanup_done) {
+            var j: usize = 0;
+            while (j < operand_ptrs.items.len) : (j += 1) {
+                if (operand_owned.items[j]) {
+                    alloc.destroy(operand_ptrs.items[j]);
+                }
+            }
+            operand_ptrs.deinit(alloc);
+            operand_owned.deinit(alloc);
+            cleanup_done = true;
+        }
+    }
+
     // Step 2: iterate in topological order
     var i: usize = 0;
     while (i < resolve_result.ordered_names.len) : (i += 1) {
@@ -1915,59 +1947,106 @@ pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
         // Lookup formula in registry
         const nf = input.registry.formulas.get(name) orelse return ValuationError.NotFound;
 
-        // Gather operands from source_data or prior results
-        var operand_ptrs: std.ArrayListUnmanaged(*arrowAdapter.ArrowArray) = .empty;
-        errdefer operand_ptrs.deinit(alloc);
+        // Free owned ArrowArray copies from previous iteration, then clear lists
+        var oi: usize = 0;
+        while (oi < operand_ptrs.items.len) : (oi += 1) {
+            if (operand_owned.items[oi]) {
+                alloc.destroy(operand_ptrs.items[oi]);
+            }
+        }
+        operand_ptrs.clearRetainingCapacity();
+        operand_owned.clearRetainingCapacity();
 
+        // Gather operands from source_data or prior results.
+        // We copy leaf source arrays so that resultFrameFree can safely
+        // destroy() any stored ArrowArray pointers without double-freeing
+        // caller-owned data.
         var src_idx: usize = 0;
         while (src_idx < nf.sources.len) : (src_idx += 1) {
             const src_name = nf.sources[src_idx];
 
             if (input.source_data.get(src_name)) |src_arr| {
-                // Source is a leaf metric — use directly (owned by caller)
-                operand_ptrs.append(alloc, src_arr) catch return ValuationError.AllocationFailed;
+                // Source is a leaf metric — copy to owned array so frame can destroy() it
+                const owned = alloc.create(arrowAdapter.ArrowArray) catch return ValuationError.AllocationFailed;
+                owned.* = src_arr.*;
+                operand_ptrs.append(alloc, owned) catch return ValuationError.AllocationFailed;
+                operand_owned.append(alloc, true) catch return ValuationError.AllocationFailed;
             } else if (frame.results.get(src_name)) |cached_arr| {
-                // Source is a previously computed formula result
+                // Source is a previously computed formula result — use directly (frame owns it)
                 operand_ptrs.append(alloc, cached_arr) catch return ValuationError.AllocationFailed;
+                operand_owned.append(alloc, false) catch return ValuationError.AllocationFailed;
             } else {
                 return ValuationError.NotFound;
             }
         }
 
-        // Handle leaf formulas (0 sources) and single-source formulas (pass-through)
+        // Handle leaf formulas (0 sources) — nothing to compute, skip
         if (operand_ptrs.items.len == 0) {
-            // Pure leaf — nothing to compute, skip
             continue;
         }
 
+        // Execute the operation (2+ operands) or pass-through (1 operand)
         if (operand_ptrs.items.len == 1) {
-            // Single source — pass through (identity operation)
+            // Single source — pass through (identity operation).
             const src_arr = operand_ptrs.items[0];
-            const len = src_arr.length;
+            const len = src_arr.*.length;
             if (len <= 0) return ValuationError.TypeMismatch;
             if (len > std.math.maxInt(usize)) return ValuationError.TypeMismatch;
 
-            const copied_data = (alloc.alloc(f64, @intCast(len))) catch {
+            // Allocate fresh ArrowArray and data buffer for frame ownership
+            const frame_arr = alloc.create(arrowAdapter.ArrowArray) catch return ValuationError.AllocationFailed;
+            const copied_data = alloc.alloc(f64, @intCast(len)) catch {
+                alloc.destroy(frame_arr);
                 return ValuationError.AllocationFailed;
             };
-            const src_buf0: [*c]*const void = src_arr.buffers;
+            const src_buf0: [*c]*const void = src_arr.*.buffers;
             const src_data: [*]const f64 = @ptrFromInt(@intFromPtr(src_buf0[1]));
             for (0..@intCast(len)) |j| {
                 copied_data[j] = src_data[j];
             }
 
-            (frame.results.put(name, src_arr)) catch {
+            // Properly initialize the ArrowArray struct (same pattern as executeOperation)
+            const buffers_holder = alloc.alloc(u64, 2) catch {
                 alloc.free(copied_data);
+                alloc.destroy(frame_arr);
                 return ValuationError.AllocationFailed;
             };
-            (frame.result_data.put(name, copied_data)) catch {
+            buffers_holder[0] = 0;
+            buffers_holder[1] = @intFromPtr(copied_data.ptr);
+            const buf_ptr: [*c]*const void = @ptrCast(buffers_holder.ptr);
+
+            frame_arr.* = arrowAdapter.ArrowArray{
+                .length = len,
+                .null_count = 0,
+                .offset = 0,
+                .n_buffers = 1,
+                .n_children = 0,
+                .buffers = buf_ptr,
+                .children = null,
+                .dictionary = null,
+                .release = null,
+                .private_data = null,
+            };
+
+            const name_copy = alloc.dupe(u8, name) catch {
+                alloc.free(copied_data);
+                alloc.destroy(frame_arr);
                 return ValuationError.AllocationFailed;
             };
-            frame.buffers_holders.put(name, null) catch {};
+            (frame.results.put(name_copy, frame_arr)) catch {
+                alloc.free(copied_data);
+                alloc.free(name_copy);
+                return ValuationError.AllocationFailed;
+            };
+            (frame.result_data.put(name_copy, copied_data)) catch {
+                alloc.free(name_copy);
+                return ValuationError.AllocationFailed;
+            };
+            frame.buffers_holders.put(name_copy, buffers_holder) catch {};
             continue;
         }
 
-        // Execute the operation
+        // Multi-operand: execute the operation
         const c_operands: []const *arrowAdapter.ArrowArray = operand_ptrs.items;
 
         const compute_result = arrowAdapter.executeOperation(
@@ -1983,23 +2062,37 @@ pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
         };
 
         // Store result in frame: move ownership of ArrowArray struct and data.
-        // Do NOT call computeResultFree — we're taking the pieces into the frame.
-        // Cast [*c]ArrowArray to *ArrowArray (output_array is a heap-allocated single struct).
         const result_arr_ptr: *arrowAdapter.ArrowArray = @ptrCast(compute_result.output_array);
 
-        (frame.results.put(name, result_arr_ptr)) catch {
+        const name_copy = (alloc.dupe(u8, name)) catch {
             arrowAdapter.computeResultFree(compute_result);
             return ValuationError.AllocationFailed;
         };
-        (frame.result_data.put(name, compute_result.data)) catch {
+        (frame.results.put(name_copy, result_arr_ptr)) catch {
+            arrowAdapter.computeResultFree(compute_result);
+            alloc.free(name_copy);
             return ValuationError.AllocationFailed;
         };
-        (frame.buffers_holders.put(name, compute_result.buffers_holder)) catch {
+        (frame.result_data.put(name_copy, compute_result.data)) catch {
+            alloc.free(name_copy);
             return ValuationError.AllocationFailed;
         };
-
-        operand_ptrs.deinit(alloc);
+        (frame.buffers_holders.put(name_copy, compute_result.buffers_holder)) catch {
+            alloc.free(name_copy);
+            return ValuationError.AllocationFailed;
+        };
     }
+
+    // Clean up reusable operand arrays on success
+    // Destroy any remaining owned ArrowArray copies before deinit
+    var oj: usize = 0;
+    while (oj < operand_ptrs.items.len) : (oj += 1) {
+        if (operand_owned.items[oj]) {
+            alloc.destroy(operand_ptrs.items[oj]);
+        }
+    }
+    operand_ptrs.deinit(alloc);
+    operand_owned.deinit(alloc);
 
     return frame;
 }
@@ -2025,7 +2118,6 @@ fn makeSourceArray(alloc: std.mem.Allocator, data: []const f64) !struct {
     const buf_ptr: [*c]*const void = @ptrCast(buffers_array.ptr);
 
     const arr = try alloc.create(arrowAdapter.ArrowArray);
-    errdefer alloc.free(buffers_array);
     errdefer alloc.destroy(arr);
 
     arr.* = arrowAdapter.ArrowArray{
@@ -2098,7 +2190,10 @@ test "runValuation: linear_chain_execution A→B" {
     };
 
     var frame = try runValuation(input);
-    defer resultFrameFree(frame);
+    defer {
+        resultFrameFree(frame);
+        frame.allocator.destroy(frame);
+    }
 
     // Now free source arrays
     alloc.free(a_src[1]);
@@ -2137,7 +2232,10 @@ test "runValuation: single_formula_no_deps" {
     };
 
     var frame = try runValuation(input);
-    defer resultFrameFree(frame);
+    defer {
+        resultFrameFree(frame);
+        frame.allocator.destroy(frame);
+    }
 
     alloc.free(sa_src[1]);
     alloc.free(sa_src[2]);
@@ -2186,7 +2284,10 @@ test "runValuation: independent_formulas" {
     };
 
     var frame = try runValuation(input);
-    defer resultFrameFree(frame);
+    defer {
+        resultFrameFree(frame);
+        frame.allocator.destroy(frame);
+    }
 
     alloc.free(xa_src[1]);
     alloc.free(xa_src[2]);
@@ -2315,7 +2416,10 @@ test "runValuation: diamond_execution" {
     };
 
     var frame = try runValuation(input);
-    defer resultFrameFree(frame);
+    defer {
+        resultFrameFree(frame);
+        frame.allocator.destroy(frame);
+    }
 
     alloc.free(a_src[1]);
     alloc.free(a_src[2]);
@@ -2352,7 +2456,10 @@ test "runValuation: partial_dependency_resolution" {
     };
 
     var frame = try runValuation(input);
-    defer resultFrameFree(frame);
+    defer {
+        resultFrameFree(frame);
+        frame.allocator.destroy(frame);
+    }
 
     alloc.free(a_src[1]);
     alloc.free(a_src[2]);
@@ -2388,7 +2495,10 @@ test "runValuation: multiple_sources_for_one_formula" {
     };
 
     var frame = try runValuation(input);
-    defer resultFrameFree(frame);
+    defer {
+        resultFrameFree(frame);
+        frame.allocator.destroy(frame);
+    }
 
     alloc.free(a_src[1]);
     alloc.free(a_src[2]);
@@ -2495,7 +2605,10 @@ test "runValuation: complex_chain" {
     };
 
     var frame = try runValuation(input);
-    defer resultFrameFree(frame);
+    defer {
+        resultFrameFree(frame);
+        frame.allocator.destroy(frame);
+    }
 
     // Free all source arrays after runValuation completes
     alloc.free(r_src[1]);
@@ -2573,7 +2686,6 @@ pub fn attachProvenance(
     // Use the dependency resolver for topo ordering of formulas.
     var resolver = dependencyResolver.DependencyResolver.init(allocator);
     const topo_result = dependencyResolver.resolveDependencies(&resolver, registry) catch return ProvenanceError.AllocationFailed;
-    defer dependencyResolver.resolveResultFree(topo_result);
 
     // BFS from target to find all reachable formulas and their data-key sources.
     var visited: std.StringHashMap(void) = .init(allocator);
@@ -2633,6 +2745,13 @@ pub fn attachProvenance(
         }
     }
 
+    // Clean up visited and queue on success path.
+    visited.deinit();
+    for (queue.items) |item| allocator.free(item);
+    queue.deinit(allocator);
+    for (topo_result.ordered_names) |name| allocator.free(name);
+    allocator.free(topo_result.ordered_names);
+
     return Provenance{
         .name = name_copy,
         .sources = sources,
@@ -2660,12 +2779,16 @@ pub const ResultFrameWithProvenance = struct {
         const alloc = self.allocator;
         var it = self.results.iterator();
         while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
             alloc.destroy(entry.value_ptr.*);
         }
         self.results.deinit();
 
         var pit = self.provenance.iterator();
-        while (pit.next()) |entry| @as(*Provenance, @ptrCast(entry.value_ptr)).deinit();
+        while (pit.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            @as(*Provenance, @ptrCast(entry.value_ptr)).deinit();
+        }
         self.provenance.deinit();
     }
 };
@@ -2894,8 +3017,8 @@ test "provenance: complex_chain_provenance ROIC→STLA→EV→EBITDA→EV_EBITDA
 
     try expectEqualStrings("EV_EBITDA", prov.name);
     // Chain: R, I, ONE, M, D (leaves) → ROIC, STLA, EV, EBITDA (intermediates) → EV_EBITDA (target)
-    try expectEqual(9, prov.chain.items.len);
-    try expectEqualStrings("EV_EBITDA", prov.chain.items[8]);
+    try expectEqual(10, prov.chain.items.len);
+    try expectEqualStrings("EV_EBITDA", prov.chain.items[9]);
 }
 
 test "provenance: query_provenance_by_name" {
@@ -2929,7 +3052,12 @@ test "provenance: query_provenance_by_name" {
     try expectEqualStrings("X", found.?.name);
     try expectEqualStrings("add", found.?.operation);
 
-    // Map owns the provenance values and key copies — deinit to free everything
+    // Deinit each Provenance value and free keys (StringHashMap.deinit doesn't free keys)
+    var it = provenance_map.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.*.deinit();
+        alloc.free(entry.key_ptr.*);
+    }
     provenance_map.deinit();
 }
 
@@ -2965,6 +3093,7 @@ test "provenance: all_provenance_built" {
 
     // Create a minimal frame with 3 entries (A, B, C)
     var frame = ResultFrame.init(alloc);
+    defer resultFrameFree(&frame);
     errdefer resultFrameFree(&frame);
 
     // Populate frame with mock result data for A, B, C
@@ -2986,9 +3115,10 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    try frame.results.put("A", a_arr);
-    try frame.result_data.put("A", a_data);
-    try frame.buffers_holders.put("A", a_buffers);
+    const key_a = try alloc.dupe(u8, "A");
+    try frame.results.put(key_a, a_arr);
+    try frame.result_data.put(key_a, a_data);
+    try frame.buffers_holders.put(key_a, a_buffers);
 
     const b_data = try alloc.alloc(f64, 1);
     b_data[0] = 2.0;
@@ -3008,9 +3138,10 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    try frame.results.put("B", b_arr);
-    try frame.result_data.put("B", b_data);
-    try frame.buffers_holders.put("B", b_buffers);
+    const key_b = try alloc.dupe(u8, "B");
+    try frame.results.put(key_b, b_arr);
+    try frame.result_data.put(key_b, b_data);
+    try frame.buffers_holders.put(key_b, b_buffers);
 
     const c_data = try alloc.alloc(f64, 1);
     c_data[0] = 3.0;
@@ -3030,9 +3161,10 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    try frame.results.put("C", c_arr);
-    try frame.result_data.put("C", c_data);
-    try frame.buffers_holders.put("C", c_buffers);
+    const key_c = try alloc.dupe(u8, "C");
+    try frame.results.put(key_c, c_arr);
+    try frame.result_data.put(key_c, c_data);
+    try frame.buffers_holders.put(key_c, c_buffers);
 
     var result = try buildAllProvenance(&frame, &registry, alloc);
     defer result.deinit();
