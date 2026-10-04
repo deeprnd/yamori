@@ -294,4 +294,10 @@ pub fn build(b: *std.Build) void {
     cov_step.dependOn(&arrow_test_exe.step);
     cov_step.dependOn(&result_test_exe.step);
     cov_step.dependOn(&provenance_test_exe.step);
+
+    // ── Compile check (lint integration) ────────────────────────────────────
+    // Compile all library modules without the main executable (no entry point).
+    const check_step = b.step("check", "Compile the library modules without installing");
+    // Build each module's test binary to verify compilation; skip the exe.
+    check_step.dependOn(&test_exe.step);
 }

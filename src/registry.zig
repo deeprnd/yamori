@@ -1,7 +1,7 @@
 // CapabilityRegistry — stores and looks up Capability entries.
 
 const std = @import("std");
-const capability = @import("capability.zig");
+const capability = @import("capability");
 const Capability = capability.Capability;
 
 pub const RegistryError = error{
