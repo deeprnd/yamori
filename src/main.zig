@@ -1934,8 +1934,37 @@ pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
             }
         }
 
-        if (operand_ptrs.items.len < 2) {
-            return ValuationError.TypeMismatch;
+        // Handle leaf formulas (0 sources) and single-source formulas (pass-through)
+        if (operand_ptrs.items.len == 0) {
+            // Pure leaf — nothing to compute, skip
+            continue;
+        }
+
+        if (operand_ptrs.items.len == 1) {
+            // Single source — pass through (identity operation)
+            const src_arr = operand_ptrs.items[0];
+            const len = src_arr.length;
+            if (len <= 0) return ValuationError.TypeMismatch;
+            if (len > std.math.maxInt(usize)) return ValuationError.TypeMismatch;
+
+            const copied_data = (alloc.alloc(f64, @intCast(len))) catch {
+                return ValuationError.AllocationFailed;
+            };
+            const src_buf0: [*c]*const void = src_arr.buffers;
+            const src_data: [*]const f64 = @ptrFromInt(@intFromPtr(src_buf0[1]));
+            for (0..@intCast(len)) |j| {
+                copied_data[j] = src_data[j];
+            }
+
+            (frame.results.put(name, src_arr)) catch {
+                alloc.free(copied_data);
+                return ValuationError.AllocationFailed;
+            };
+            (frame.result_data.put(name, copied_data)) catch {
+                return ValuationError.AllocationFailed;
+            };
+            frame.buffers_holders.put(name, null) catch {};
+            continue;
         }
 
         // Execute the operation
