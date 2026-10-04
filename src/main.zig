@@ -2,6 +2,7 @@ const std = @import("std");
 const capability = @import("capability.zig");
 const registry_mod = @import("registry.zig");
 const arrow_mod = @import("arrow_adapter.zig");
+const gsl_mod = @import("gsl_adapter.zig");
 pub const Capability = capability.Capability;
 pub const TypeDescriptor = capability.TypeDescriptor;
 pub const CapabilityCategory = capability.CapabilityCategory;
@@ -1114,7 +1115,7 @@ test "CapabilityRegistry.iterate returns all entries" {
     }
     try std.testing.expectEqual(@as(usize, 2), found_count);
 
-    for (&cap_holders) |*c| c.deinit(gpa);
+    // Ownership transferred to registry on register; do NOT deinit cap_holders here.
 }
 
 // ─── Arrow Compute Map Tests ────────────────────────────────────────────
@@ -1162,6 +1163,319 @@ test "ArrowComputeMap.lookup returns correct arrow fn names" {
     try std.testing.expectEqualStrings("count", arrow_mod.ArrowComputeMap.lookup("count").?);
     try std.testing.expectEqualStrings("stddev", arrow_mod.ArrowComputeMap.lookup("std_dev").?);
     try std.testing.expectEqualStrings("variance", arrow_mod.ArrowComputeMap.lookup("variance").?);
+}
+
+// ─── ArrowFunctionRegistry Tests (Task 3) ───────────────────────────────
+
+test "ArrowFunctionRegistry.register and get" {
+    const gpa = std.testing.allocator;
+    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    const fn_entry = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
+        .name = "add",
+        .arrow_fn_name = "add",
+    };
+    try reg.register(fn_entry);
+
+    const found = reg.get("add") orelse unreachable;
+    try std.testing.expectEqualStrings("add", found.name);
+    try std.testing.expectEqualStrings("add", found.arrow_fn_name);
+}
+
+test "ArrowFunctionRegistry.get returns null for missing key" {
+    const gpa = std.testing.allocator;
+    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    try std.testing.expect(reg.get("nonexistent") == null);
+}
+
+test "ArrowFunctionRegistry.register rejects duplicate" {
+    const gpa = std.testing.allocator;
+    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    const fn_entry = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
+        .name = "sum",
+        .arrow_fn_name = "sum",
+    };
+    try reg.register(fn_entry);
+    try std.testing.expectError(
+        arrow_mod.ArrowError.ComputeFailed,
+        reg.register(fn_entry),
+    );
+}
+
+test "ArrowFunctionRegistry multiple registrations" {
+    const gpa = std.testing.allocator;
+    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    const fns = [_]arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
+        .{ .name = "add", .arrow_fn_name = "add" },
+        .{ .name = "subtract", .arrow_fn_name = "subtract" },
+        .{ .name = "sum", .arrow_fn_name = "sum" },
+    };
+    for (fns) |f| try reg.register(f);
+
+    try std.testing.expectEqual(@as(usize, 3), reg.functions.count());
+    try std.testing.expect(reg.get("add") != null);
+    try std.testing.expect(reg.get("subtract") != null);
+    try std.testing.expect(reg.get("sum") != null);
+}
+
+// ─── ArrowAdapter Input Validation Tests (Task 5) ───────────────────────
+
+test "ArrowAdapter.validateInputLengths accepts single valid input" {
+    const data = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    try arrow_mod.ArrowAdapter.validateInputLengths(&.{ &data });
+}
+
+test "ArrowAdapter.validateInputLengths rejects mismatched lengths" {
+    const data1 = [3]f64{ 1.0, 2.0, 3.0 };
+    const data2 = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    try std.testing.expectError(
+        arrow_mod.ArrowError.InvalidInputLength,
+        arrow_mod.ArrowAdapter.validateInputLengths(&.{ &data1, &data2 }),
+    );
+}
+
+test "ArrowAdapter.validateInputLengths rejects empty input" {
+    const empty: []const f64 = &.{};
+    try std.testing.expectError(
+        arrow_mod.ArrowError.InvalidInputLength,
+        arrow_mod.ArrowAdapter.validateInputLengths(&.{ empty }),
+    );
+}
+
+test "ArrowAdapter.validateInputLengths accepts multiple equal-length inputs" {
+    const data1 = [4]f64{ 1.0, 2.0, 3.0, 4.0 };
+    const data2 = [4]f64{ 5.0, 6.0, 7.0, 8.0 };
+    const data3 = [4]f64{ 9.0, 10.0, 11.0, 12.0 };
+    try arrow_mod.ArrowAdapter.validateInputLengths(&.{ &data1, &data2, &data3 });
+}
+
+// ─── GSLFunctionMap Tests (Task 1) ──────────────────────────────────────
+
+test "GSLFunctionMap.lookup returns GSL fn for known capability" {
+    const arrow_fn = gsl_mod.GSLFunctionMap.lookup("mean") orelse unreachable;
+    try std.testing.expect(std.mem.eql(u8, arrow_fn, "gsl_stats_mean"));
+}
+
+test "GSLFunctionMap.lookup returns null for unknown capability" {
+    const arrow_fn = gsl_mod.GSLFunctionMap.lookup("nonexistent");
+    try std.testing.expect(arrow_fn == null);
+}
+
+test "GSLFunctionMap contains all expected mappings" {
+    try std.testing.expectEqual(@as(usize, 8), gsl_mod.GSLFunctionMap.all.len);
+}
+
+test "GSLFunctionMap entries have non-empty headers" {
+    for (gsl_mod.GSLFunctionMap.all) |entry| {
+        try std.testing.expect(entry.gsl_header.len > 0);
+        try std.testing.expect(entry.gsl_fn.len > 0);
+    }
+}
+
+test "GSLFunctionMap.lookup all known GSL capabilities" {
+    inline for (gsl_mod.GSLFunctionMap.all) |entry| {
+        const arrow_fn = gsl_mod.GSLFunctionMap.lookup(entry.capability_name) orelse {
+            try std.testing.expect(false);
+            return;
+        };
+        try std.testing.expect(arrow_fn.len > 0);
+    }
+}
+
+// ─── GSLAdapterError Tests (Task 2) ─────────────────────────────────────
+
+test "GSLAdapterError types are defined" {
+    try std.testing.expect(std.mem.eql(u8, @errorName(gsl_mod.GSLAdapterError.LibraryNotFound), "LibraryNotFound"));
+    try std.testing.expect(std.mem.eql(u8, @errorName(gsl_mod.GSLAdapterError.InvalidInput), "InvalidInput"));
+    try std.testing.expect(std.mem.eql(u8, @errorName(gsl_mod.GSLAdapterError.ComputeFailed), "ComputeFailed"));
+    try std.testing.expect(std.mem.eql(u8, @errorName(gsl_mod.GSLAdapterError.FunctionNotFound), "FunctionNotFound"));
+    try std.testing.expect(std.mem.eql(u8, @errorName(gsl_mod.GSLAdapterError.MemoryAllocationFailed), "MemoryAllocationFailed"));
+}
+
+// ─── GSLFunctionRegistry Tests (Task 3) ─────────────────────────────────
+
+test "GSLFunctionRegistry.register and get" {
+    const gpa = std.testing.allocator;
+    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
+        .name = "mean",
+        .gsl_fn_name = "gsl_stats_mean",
+        .gsl_header = "mean",
+        .min_inputs = 1,
+        .max_inputs = 1,
+    };
+    try reg.register(entry);
+
+    const found = reg.get("mean") orelse unreachable;
+    try std.testing.expectEqualStrings("gsl_stats_mean", found.gsl_fn_name);
+    try std.testing.expectEqualStrings("mean", found.gsl_header);
+    try std.testing.expectEqual(@as(usize, 1), found.min_inputs);
+}
+
+test "GSLFunctionRegistry.get returns null for missing key" {
+    const gpa = std.testing.allocator;
+    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    try std.testing.expect(reg.get("nonexistent") == null);
+}
+
+test "GSLFunctionRegistry multiple registrations" {
+    const gpa = std.testing.allocator;
+    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    const entries = [_]gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
+        .{ .name = "mean", .gsl_fn_name = "gsl_stats_mean", .gsl_header = "mean", .min_inputs = 1, .max_inputs = 1 },
+        .{ .name = "variance", .gsl_fn_name = "gsl_stats_variance", .gsl_header = "variance", .min_inputs = 1, .max_inputs = 1 },
+        .{ .name = "std_dev", .gsl_fn_name = "gsl_stats_sd", .gsl_header = "sd", .min_inputs = 1, .max_inputs = 1 },
+    };
+    for (entries) |e| try reg.register(e);
+
+    try std.testing.expectEqual(@as(usize, 3), reg.functions.count());
+    try std.testing.expect(reg.get("mean") != null);
+    try std.testing.expect(reg.get("variance") != null);
+    try std.testing.expect(reg.get("std_dev") != null);
+}
+
+// ─── GSL Populated Registry Tests (Task 4) ─────────────────────────────
+
+test "GSLFunctionRegistry populates from GSLFunctionMap" {
+    const gpa = std.testing.allocator;
+    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
+    defer reg.deinit();
+
+    inline for (gsl_mod.GSLFunctionMap.all) |entry| {
+        const fn_entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
+            .name = entry.capability_name,
+            .gsl_fn_name = entry.gsl_fn,
+            .gsl_header = entry.gsl_header,
+            .min_inputs = 1,
+            .max_inputs = 2,
+        };
+        try reg.register(fn_entry);
+    }
+
+    // Verify all mappings are registered
+    try std.testing.expectEqual(@as(usize, 8), reg.functions.count());
+}
+
+// ─── GSLAdapter Input Validation Tests (Task 5) ─────────────────────────
+
+test "GSLAdapter.validateGSLInput accepts valid f64 vectors" {
+    const data1 = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    const data2 = [5]f64{ 2.0, 3.0, 4.0, 5.0, 6.0 };
+    try gsl_mod.GSLAdapter.validateGSLInput(&.{ &data1, &data2 });
+}
+
+test "GSLAdapter.validateGSLInput rejects empty input" {
+    const empty: []const f64 = &.{};
+    try std.testing.expectError(
+        gsl_mod.GSLAdapterError.InvalidInput,
+        gsl_mod.GSLAdapter.validateGSLInput(&.{ empty }),
+    );
+}
+
+test "GSLAdapter.validateGSLInput rejects mismatched lengths" {
+    const data1 = [3]f64{ 1.0, 2.0, 3.0 };
+    const data2 = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    try std.testing.expectError(
+        gsl_mod.GSLAdapterError.InvalidInput,
+        gsl_mod.GSLAdapter.validateGSLInput(&.{ &data1, &data2 }),
+    );
+}
+
+test "GSLAdapter.validateGSLInput rejects empty input list" {
+    try std.testing.expectError(
+        gsl_mod.GSLAdapterError.InvalidInput,
+        gsl_mod.GSLAdapter.validateGSLInput(&.{}),
+    );
+}
+
+// ─── GSL/Arrow Coexistence Tests (Task 6) ──────────────────────────────
+
+test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
+    const gpa = std.testing.allocator;
+    var cap_reg = registry_mod.CapabilityRegistry.init(gpa);
+    defer cap_reg.deinit();
+
+    // Register Arrow capability
+    const arrow_cap = capability.Capability.init(
+        gpa, "add", 1, "Arrow add",
+        &.{capability.TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        capability.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+        .arrow,
+    );
+    try cap_reg.register(arrow_cap);
+
+    // Register GSL capability
+    const gsl_cap = capability.Capability.init(
+        gpa, "mean", 1, "GSL mean",
+        &.{capability.TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        capability.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+        .gsl,
+    );
+    try cap_reg.register(gsl_cap);
+
+    try std.testing.expectEqual(@as(usize, 2), cap_reg.count());
+    try std.testing.expectEqualStrings("arrow", @tagName(cap_reg.get("add").?.backend_selector));
+    try std.testing.expectEqualStrings("gsl", @tagName(cap_reg.get("mean").?.backend_selector));
+}
+
+// ─── Integration Tests (Task 4) ─────────────────────────────────────────
+
+test "ArrowFunctionRegistry populates from CapabilityRegistry" {
+    const gpa = std.testing.allocator;
+    var cap_reg = registry_mod.CapabilityRegistry.init(gpa);
+    defer cap_reg.deinit();
+
+    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
+    defer arrow_reg.deinit();
+
+    // Create capabilities that match ArrowComputeMap entries
+    inline for (arrow_mod.ArrowComputeMap.all) |entry| {
+        const cap = capability.Capability.init(
+            gpa,
+            entry.capability_name,
+            1,
+            "Arrow-implemented " ++ entry.capability_name,
+            &.{capability.TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+            capability.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+            .arrow,
+        );
+        // Ownership transfers to cap_reg on register; do NOT deinit cap here.
+        try cap_reg.register(cap);
+
+        const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
+            .name = entry.capability_name,
+            .arrow_fn_name = entry.arrow_fn,
+        };
+        try arrow_reg.register(arrow_fn);
+    }
+
+    // Verify all capabilities have matching Arrow functions
+    var it = cap_reg.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.backend_selector != .arrow) continue;
+        const arrow_fn = arrow_reg.get(entry.value_ptr.name) orelse {
+            try std.testing.expect(false);
+            return;
+        };
+        const expected = arrow_mod.ArrowComputeMap.lookup(entry.value_ptr.name) orelse {
+            try std.testing.expect(false);
+            return;
+        };
+        try std.testing.expectEqualStrings(expected, arrow_fn.arrow_fn_name);
+    }
 }
 
 // ─── Dependency Resolver Tests ──────────────────────────────────────────

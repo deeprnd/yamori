@@ -2,6 +2,14 @@
 
 const std = @import("std");
 
+pub const GSLAdapterError = error{
+    LibraryNotFound,
+    FunctionNotFound,
+    InvalidInput,
+    ComputeFailed,
+    MemoryAllocationFailed,
+};
+
 pub const GSLFunctionMap = struct {
     const Entry = struct {
         capability_name: []const u8,
@@ -29,5 +37,79 @@ pub const GSLFunctionMap = struct {
             }
         }
         return null;
+    }
+};
+
+/// Registry that maps capability names to GSL function metadata.
+pub const GSLFunctionRegistry = struct {
+    allocator: std.mem.Allocator,
+    functions: std.StringHashMap(GSLFunctionEntry),
+
+    pub const GSLFunctionEntry = struct {
+        name: []const u8,
+        gsl_fn_name: []const u8,
+        gsl_header: []const u8,
+        min_inputs: usize,
+        max_inputs: usize,
+    };
+
+    pub fn init(gpa: std.mem.Allocator) GSLFunctionRegistry {
+        return GSLFunctionRegistry{
+            .allocator = gpa,
+            .functions = std.StringHashMap(GSLFunctionEntry).init(gpa),
+        };
+    }
+
+    pub fn deinit(self: *GSLFunctionRegistry) void {
+        var it = self.functions.iterator();
+        while (it.next()) |kv| {
+            self.allocator.free(kv.key_ptr.*);
+            self.allocator.free(kv.value_ptr.gsl_fn_name);
+            self.allocator.free(kv.value_ptr.gsl_header);
+        }
+        self.functions.deinit();
+    }
+
+    pub fn register(self: *GSLFunctionRegistry, entry: GSLFunctionEntry) !void {
+        const name_dupe = (self.allocator.dupe(u8, entry.name)) catch return GSLAdapterError.MemoryAllocationFailed;
+        const fn_name_dupe = (self.allocator.dupe(u8, entry.gsl_fn_name)) catch {
+            self.allocator.free(name_dupe);
+            return GSLAdapterError.MemoryAllocationFailed;
+        };
+        const header_dupe = (self.allocator.dupe(u8, entry.gsl_header)) catch {
+            self.allocator.free(name_dupe);
+            self.allocator.free(fn_name_dupe);
+            return GSLAdapterError.MemoryAllocationFailed;
+        };
+        const val = GSLFunctionEntry{
+            .name = name_dupe,
+            .gsl_fn_name = fn_name_dupe,
+            .gsl_header = header_dupe,
+            .min_inputs = entry.min_inputs,
+            .max_inputs = entry.max_inputs,
+        };
+        try self.functions.put(name_dupe, val);
+    }
+
+    pub fn get(self: *const GSLFunctionRegistry, name: []const u8) ?*const GSLFunctionEntry {
+        return self.functions.getPtr(name);
+    }
+};
+
+/// Input validation helpers for GSL compute dispatch.
+pub const GSLAdapter = struct {
+    /// Validate that all input slices are non-empty f64 vectors of matching lengths.
+    pub fn validateGSLInput(inputs: []const []const f64) GSLAdapterError!void {
+        if (inputs.len == 0) return GSLAdapterError.InvalidInput;
+
+        const first_len = inputs[0].len;
+        if (first_len == 0) return GSLAdapterError.InvalidInput;
+
+        var i: usize = 1;
+        while (i < inputs.len) : (i += 1) {
+            if (inputs[i].len != first_len) {
+                return GSLAdapterError.InvalidInput;
+            }
+        }
     }
 };

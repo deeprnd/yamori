@@ -23,17 +23,26 @@ pub const CapabilityRegistry = struct {
     pub fn deinit(self: *CapabilityRegistry) void {
         var it = self.capabilities.iterator();
         while (it.next()) |entry| {
+            // Free the key (allocated by register's dupe).
+            self.allocator.free(entry.key_ptr.*);
+            // Free the Capability's input_types allocation.
             entry.value_ptr.deinit(self.allocator);
         }
         self.capabilities.deinit();
     }
 
     /// Register a capability. Returns DuplicateCapability if name already exists.
+    /// Takes ownership of the Capability's allocated input_types.
     pub fn register(self: *CapabilityRegistry, cap: Capability) RegistryError!void {
         if (self.capabilities.contains(cap.name)) {
             return RegistryError.DuplicateCapability;
         }
-        self.capabilities.put(cap.name, cap) catch return RegistryError.AllocationFailed;
+        const key_dupe = self.allocator.dupe(u8, cap.name) catch return RegistryError.AllocationFailed;
+        self.capabilities.put(key_dupe, cap) catch {
+            self.allocator.free(key_dupe);
+            self.allocator.free(cap.input_types);
+            return RegistryError.AllocationFailed;
+        };
     }
 
     /// Lookup a capability by name. Returns null if not found.
@@ -60,7 +69,7 @@ pub const CapabilityRegistry = struct {
     /// Serialize the registry to a JSON string.
     pub fn toJson(self: *const CapabilityRegistry, gpa: std.mem.Allocator) ![]u8 {
         var buf = try std.ArrayList(u8).initCapacity(gpa, 0);
-        errdefer buf.deinit(gpa);
+        errdefer gpa.free(buf.items);
 
         try buf.appendSlice(gpa, "{\"capabilities\":[");
 
