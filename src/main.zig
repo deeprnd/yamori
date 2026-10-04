@@ -1,10 +1,13 @@
 const std = @import("std");
 const capability = @import("capability.zig");
+const registry_mod = @import("registry.zig");
+const arrow_mod = @import("arrow_adapter.zig");
 pub const Capability = capability.Capability;
 pub const TypeDescriptor = capability.TypeDescriptor;
 pub const CapabilityCategory = capability.CapabilityCategory;
 pub const ElementType = capability.ElementType;
 pub const BackendSelector = capability.BackendSelector;
+pub const CapabilityRegistry = registry_mod.CapabilityRegistry;
 
 pub const formula = struct {
     pub const NamedFormula = struct {
@@ -991,6 +994,174 @@ test "Capability.init with empty input_types" {
 
     try std.testing.expectEqual(@as(u32, 0), cap.input_types.len);
     try std.testing.expectEqualStrings("default", @tagName(cap.backend_selector));
+}
+
+// ─── Capability Registry Tests ──────────────────────────────────────────
+
+test "CapabilityRegistry.register and get" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    const cap = Capability.init(
+        gpa,
+        "mean",
+        1,
+        "Compute mean",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+        .arrow,
+    );
+    // Ownership transfers to registry on register; do NOT deinit cap here.
+    try reg.register(cap);
+    try std.testing.expect(reg.contains("mean"));
+
+    const found = reg.get("mean") orelse unreachable;
+    try std.testing.expectEqualStrings("mean", found.name);
+    try std.testing.expectEqual(@as(u32, 1), found.version);
+}
+
+test "CapabilityRegistry.get returns null for missing key" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    try std.testing.expect(reg.get("nonexistent") == null);
+}
+
+test "CapabilityRegistry.register duplicate returns error" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    const cap = Capability.init(
+        gpa,
+        "add",
+        1,
+        "Addition",
+        &.{
+            TypeDescriptor{ .category = .vector, .element_type = .f64 },
+            TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        },
+        TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .arrow,
+    );
+    // Ownership transfers to registry on register.
+    try reg.register(cap);
+
+    // Create a second capability with the same name.
+    const cap2 = Capability.init(
+        gpa,
+        "add",
+        2,
+        "Addition v2",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .gsl,
+    );
+    // This must fail — duplicate name.
+    const result = reg.register(cap2);
+    try std.testing.expect(result == registry_mod.RegistryError.DuplicateCapability);
+    // Deinit cap2 — it was never registered.
+    cap2.deinit(gpa);
+
+    // Ensure the original is still retrievable.
+    const found = reg.get("add") orelse unreachable;
+    try std.testing.expectEqual(@as(u32, 1), found.version);
+}
+
+test "CapabilityRegistry.count returns correct number" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), reg.count());
+
+    const cap1 = Capability.init(gpa, "add", 1, "add",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
+    try reg.register(cap1);
+    try std.testing.expectEqual(@as(usize, 1), reg.count());
+
+    const cap2 = Capability.init(gpa, "sub", 1, "sub",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
+    try reg.register(cap2);
+    try std.testing.expectEqual(@as(usize, 2), reg.count());
+}
+
+test "CapabilityRegistry.iterate returns all entries" {
+    const gpa = std.testing.allocator;
+    var reg = CapabilityRegistry.init(gpa);
+    defer reg.deinit();
+
+    const caps = [_]Capability{
+        Capability.init(gpa, "alpha", 1, "a", &.{}, TypeDescriptor{ .category = .scalar, .element_type = .f64 }, .arrow),
+        Capability.init(gpa, "beta", 1, "b", &.{}, TypeDescriptor{ .category = .scalar, .element_type = .f64 }, .gsl),
+    };
+    var cap_holders: [2]Capability = caps;
+    errdefer for (&cap_holders) |*c| c.deinit(gpa);
+
+    for (cap_holders[0..]) |*c| {
+        try reg.register(c.*);
+    }
+
+    var found_count: usize = 0;
+    var it = reg.iterator();
+    while (it.next()) |entry| {
+        found_count += 1;
+        _ = entry.key_ptr;
+    }
+    try std.testing.expectEqual(@as(usize, 2), found_count);
+
+    for (&cap_holders) |*c| c.deinit(gpa);
+}
+
+// ─── Arrow Compute Map Tests ────────────────────────────────────────────
+
+test "ArrowComputeMap.lookup returns Arrow fn for known capability" {
+    const arrow_fn = arrow_mod.ArrowComputeMap.lookup("add") orelse unreachable;
+    try std.testing.expect(std.mem.eql(u8, arrow_fn, "add"));
+}
+
+test "ArrowComputeMap.lookup returns null for unknown capability" {
+    const arrow_fn = arrow_mod.ArrowComputeMap.lookup("unknown_fn");
+    try std.testing.expect(arrow_fn == null);
+}
+
+test "ArrowComputeMap contains all expected mappings" {
+    try std.testing.expectEqual(@as(usize, 11), arrow_mod.ArrowComputeMap.all.len);
+
+    var i: usize = 0;
+    while (i < arrow_mod.ArrowComputeMap.all.len) : (i += 1) {
+        try std.testing.expect(arrow_mod.ArrowComputeMap.all[i].capability_name.len > 0);
+        try std.testing.expect(arrow_mod.ArrowComputeMap.all[i].arrow_fn.len > 0);
+    }
+}
+
+test "ArrowComputeMap.lookup all known capabilities" {
+    const expected = [_][]const u8{ "add", "subtract", "multiply", "divide", "sum", "mean", "min", "max", "count", "std_dev", "variance" };
+    for (expected) |cap| {
+        const arrow_fn = arrow_mod.ArrowComputeMap.lookup(cap) orelse {
+            try std.testing.expect(false); // Should have found mapping
+            return;
+        };
+        try std.testing.expect(arrow_fn.len > 0);
+    }
+}
+
+test "ArrowComputeMap.lookup returns correct arrow fn names" {
+    try std.testing.expectEqualStrings("add", arrow_mod.ArrowComputeMap.lookup("add").?);
+    try std.testing.expectEqualStrings("subtract", arrow_mod.ArrowComputeMap.lookup("subtract").?);
+    try std.testing.expectEqualStrings("multiply", arrow_mod.ArrowComputeMap.lookup("multiply").?);
+    try std.testing.expectEqualStrings("divide", arrow_mod.ArrowComputeMap.lookup("divide").?);
+    try std.testing.expectEqualStrings("sum", arrow_mod.ArrowComputeMap.lookup("sum").?);
+    try std.testing.expectEqualStrings("mean", arrow_mod.ArrowComputeMap.lookup("mean").?);
+    try std.testing.expectEqualStrings("min", arrow_mod.ArrowComputeMap.lookup("min").?);
+    try std.testing.expectEqualStrings("max", arrow_mod.ArrowComputeMap.lookup("max").?);
+    try std.testing.expectEqualStrings("count", arrow_mod.ArrowComputeMap.lookup("count").?);
+    try std.testing.expectEqualStrings("stddev", arrow_mod.ArrowComputeMap.lookup("std_dev").?);
+    try std.testing.expectEqualStrings("variance", arrow_mod.ArrowComputeMap.lookup("variance").?);
 }
 
 // ─── Dependency Resolver Tests ──────────────────────────────────────────
