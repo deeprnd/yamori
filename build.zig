@@ -18,6 +18,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // --- Error module ---
+    const error_mod = b.addModule("error", .{
+        .root_source_file = b.path("src/error.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // --- Registry module ---
     const reg_mod = b.addModule("registry", .{
         .root_source_file = b.path("src/registry.zig"),
@@ -35,6 +42,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "capability", .module = cap_mod },
+            .{ .name = "error", .module = error_mod },
         },
     });
 
@@ -43,13 +51,31 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/arrow_adapter.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "error", .module = error_mod },
+        },
     });
 
-    // --- Error module ---
-    const error_mod = b.addModule("error", .{
-        .root_source_file = b.path("src/error.zig"),
+    // --- Backend policy module ---
+    const backend_policy_mod = b.addModule("backend_policy", .{
+        .root_source_file = b.path("src/backend_policy.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    // --- Dispatch module ---
+    const dispatch_mod = b.addModule("dispatch", .{
+        .root_source_file = b.path("src/dispatch.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capability", .module = cap_mod },
+            .{ .name = "registry", .module = reg_mod },
+            .{ .name = "arrow_adapter", .module = arrow_mod },
+            .{ .name = "gsl_adapter", .module = gsl_mod },
+            .{ .name = "error", .module = error_mod },
+            .{ .name = "backend_policy", .module = backend_policy_mod },
+        },
     });
 
     // --- Executable ---
@@ -78,6 +104,8 @@ pub fn build(b: *std.Build) void {
     test_exe_root.addImport("gsl_adapter", gsl_mod);
     test_exe_root.addImport("arrow_adapter", arrow_mod);
     test_exe_root.addImport("error", error_mod);
+    test_exe_root.addImport("dispatch", dispatch_mod);
+    test_exe_root.addImport("backend_policy", backend_policy_mod);
 
     const test_exe = b.addTest(.{
         .name = "yamori-tests",
@@ -105,6 +133,8 @@ pub fn build(b: *std.Build) void {
     formula_test_exe.root_module.addImport("gsl_adapter", gsl_mod);
     formula_test_exe.root_module.addImport("arrow_adapter", arrow_mod);
     formula_test_exe.root_module.addImport("error", error_mod);
+    formula_test_exe.root_module.addImport("dispatch", dispatch_mod);
+    formula_test_exe.root_module.addImport("backend_policy", backend_policy_mod);
     const run_formula_test = b.addRunArtifact(formula_test_exe);
     const formula_test_step = b.step("test-formula", "Run formula tests");
     formula_test_step.dependOn(&run_formula_test.step);
@@ -124,6 +154,8 @@ pub fn build(b: *std.Build) void {
     registry_test_exe.root_module.addImport("gsl_adapter", gsl_mod);
     registry_test_exe.root_module.addImport("arrow_adapter", arrow_mod);
     registry_test_exe.root_module.addImport("error", error_mod);
+    registry_test_exe.root_module.addImport("dispatch", dispatch_mod);
+    registry_test_exe.root_module.addImport("backend_policy", backend_policy_mod);
     const run_registry_test = b.addRunArtifact(registry_test_exe);
     const registry_test_step = b.step("test-registry", "Run registry tests");
     registry_test_step.dependOn(&run_registry_test.step);
@@ -143,6 +175,8 @@ pub fn build(b: *std.Build) void {
     cycle_test_exe.root_module.addImport("gsl_adapter", gsl_mod);
     cycle_test_exe.root_module.addImport("arrow_adapter", arrow_mod);
     cycle_test_exe.root_module.addImport("error", error_mod);
+    cycle_test_exe.root_module.addImport("dispatch", dispatch_mod);
+    cycle_test_exe.root_module.addImport("backend_policy", backend_policy_mod);
     const run_cycle_test = b.addRunArtifact(cycle_test_exe);
     const cycle_test_step = b.step("test-cycle", "Run cycle detection tests");
     cycle_test_step.dependOn(&run_cycle_test.step);
@@ -162,6 +196,8 @@ pub fn build(b: *std.Build) void {
     dep_test_exe.root_module.addImport("gsl_adapter", gsl_mod);
     dep_test_exe.root_module.addImport("arrow_adapter", arrow_mod);
     dep_test_exe.root_module.addImport("error", error_mod);
+    dep_test_exe.root_module.addImport("dispatch", dispatch_mod);
+    dep_test_exe.root_module.addImport("backend_policy", backend_policy_mod);
     const run_dep_test = b.addRunArtifact(dep_test_exe);
     const dep_test_step = b.step("test-dep-resolve", "Run dependency resolver tests");
     dep_test_step.dependOn(&run_dep_test.step);
@@ -181,6 +217,8 @@ pub fn build(b: *std.Build) void {
     arrow_test_exe.root_module.addImport("gsl_adapter", gsl_mod);
     arrow_test_exe.root_module.addImport("arrow_adapter", arrow_mod);
     arrow_test_exe.root_module.addImport("error", error_mod);
+    arrow_test_exe.root_module.addImport("dispatch", dispatch_mod);
+    arrow_test_exe.root_module.addImport("backend_policy", backend_policy_mod);
     const run_arrow_test = b.addRunArtifact(arrow_test_exe);
     const arrow_test_step = b.step("test-arrow", "Run arrow adapter tests");
     arrow_test_step.dependOn(&run_arrow_test.step);
@@ -200,6 +238,8 @@ pub fn build(b: *std.Build) void {
     result_test_exe.root_module.addImport("gsl_adapter", gsl_mod);
     result_test_exe.root_module.addImport("arrow_adapter", arrow_mod);
     result_test_exe.root_module.addImport("error", error_mod);
+    result_test_exe.root_module.addImport("dispatch", dispatch_mod);
+    result_test_exe.root_module.addImport("backend_policy", backend_policy_mod);
     const run_result_test = b.addRunArtifact(result_test_exe);
     const result_test_step = b.step("test-result", "Run result frame tests");
     result_test_step.dependOn(&run_result_test.step);
@@ -219,6 +259,8 @@ pub fn build(b: *std.Build) void {
     provenance_test_exe.root_module.addImport("gsl_adapter", gsl_mod);
     provenance_test_exe.root_module.addImport("arrow_adapter", arrow_mod);
     provenance_test_exe.root_module.addImport("error", error_mod);
+    provenance_test_exe.root_module.addImport("dispatch", dispatch_mod);
+    provenance_test_exe.root_module.addImport("backend_policy", backend_policy_mod);
     const run_provenance_test = b.addRunArtifact(provenance_test_exe);
     const provenance_test_step = b.step("test-provenance", "Run provenance tests");
     provenance_test_step.dependOn(&run_provenance_test.step);
