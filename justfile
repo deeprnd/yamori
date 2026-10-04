@@ -36,5 +36,15 @@ security:
 
 # ── Cleanup ─────────────────────────────────────────────────────────────────
 
+# ── Aggregate dispatchers ──────────────────────────────────────────────────────
+
+# Full handoff gate: quality checks + unit tests + coverage.
+tests-all:
+	just quality-check-all
+	just test-unit-all
+	just test-cov-yamori
+
+# ── Cleanup ──────────────────────────────────────────────────────────────────
+
 clean:
 	rm -rf zig-out zig-cache build

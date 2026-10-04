@@ -20,5 +20,5 @@ security-sanitize-check-all:
 # ── Security: All ──────────────────────────────────────────────────────────
 
 security-check-all:
-	bash {{ justfile_dir }}/contrib/security/security.sh sanitize-check-all && \
-	bash {{ justfile_dir }}/contrib/security/security.sh gitleaks-check-yamori
+	bash {{ justfile_dir }}/../contrib/security/security.sh sanitize-check-all && \
+	bash {{ justfile_dir }}/../contrib/security/security.sh gitleaks-check-yamori

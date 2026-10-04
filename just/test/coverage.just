@@ -4,7 +4,7 @@
 # Requires: kcov (sudo apt-get install kcov)
 
 test-cov-yamori:
-	@cd `git rev-parse --show-toplevel` && bash {{ justfile_dir }}/contrib/test/coverage-yamori.sh coverage-yamori
+	@cd `git rev-parse --show-toplevel` && bash {{ justfile_dir }}/../contrib/test/coverage-yamori.sh coverage-yamori
 
 test-cov-yamori-linux-x86: test-cov-yamori
 

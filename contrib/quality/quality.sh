@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 log() {
-  printf '\n[%s] %s\n' "$1" "$2"
+  printf '\n[%s] %s\n' "$1" "$2" >&2
 }
 
 run_step() {
