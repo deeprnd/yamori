@@ -141,4 +141,15 @@ pub fn build(b: *std.Build) void {
     const run_provenance_test = b.addRunArtifact(provenance_test_exe);
     const provenance_test_step = b.step("test-provenance", "Run provenance tests");
     provenance_test_step.dependOn(&run_provenance_test.step);
+
+    // ── Coverage build: compile test binaries without running them ────────
+    const cov_step = b.step("cov", "Compile test binaries for kcov coverage");
+    cov_step.dependOn(&test_exe.step);
+    cov_step.dependOn(&formula_test_exe.step);
+    cov_step.dependOn(&registry_test_exe.step);
+    cov_step.dependOn(&cycle_test_exe.step);
+    cov_step.dependOn(&dep_test_exe.step);
+    cov_step.dependOn(&arrow_test_exe.step);
+    cov_step.dependOn(&result_test_exe.step);
+    cov_step.dependOn(&provenance_test_exe.step);
 }
