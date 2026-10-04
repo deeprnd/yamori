@@ -1078,15 +1078,11 @@ test "CapabilityRegistry.count returns correct number" {
 
     try std.testing.expectEqual(@as(usize, 0), reg.count());
 
-    const cap1 = Capability.init(gpa, "add", 1, "add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
+    const cap1 = Capability.init(gpa, "add", 1, "add", &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }}, TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
     try reg.register(cap1);
     try std.testing.expectEqual(@as(usize, 1), reg.count());
 
-    const cap2 = Capability.init(gpa, "sub", 1, "sub",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
+    const cap2 = Capability.init(gpa, "sub", 1, "sub", &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }}, TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
     try reg.register(cap2);
     try std.testing.expectEqual(@as(usize, 2), reg.count());
 }
@@ -1229,7 +1225,7 @@ test "ArrowFunctionRegistry multiple registrations" {
 
 test "ArrowAdapter.validateInputLengths accepts single valid input" {
     const data = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    try arrow_mod.ArrowAdapter.validateInputLengths(&.{ &data });
+    try arrow_mod.ArrowAdapter.validateInputLengths(&.{&data});
 }
 
 test "ArrowAdapter.validateInputLengths rejects mismatched lengths" {
@@ -1245,7 +1241,7 @@ test "ArrowAdapter.validateInputLengths rejects empty input" {
     const empty: []const f64 = &.{};
     try std.testing.expectError(
         arrow_mod.ArrowError.InvalidInputLength,
-        arrow_mod.ArrowAdapter.validateInputLengths(&.{ empty }),
+        arrow_mod.ArrowAdapter.validateInputLengths(&.{empty}),
     );
 }
 
@@ -1381,7 +1377,7 @@ test "GSLAdapter.validateGSLInput rejects empty input" {
     const empty: []const f64 = &.{};
     try std.testing.expectError(
         gsl_mod.GSLAdapterError.InvalidInput,
-        gsl_mod.GSLAdapter.validateGSLInput(&.{ empty }),
+        gsl_mod.GSLAdapter.validateGSLInput(&.{empty}),
     );
 }
 
@@ -1410,7 +1406,10 @@ test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
 
     // Register Arrow capability
     const arrow_cap = capability_mod.Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{capability_mod.TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         capability_mod.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .arrow,
@@ -1419,7 +1418,10 @@ test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
 
     // Register GSL capability
     const gsl_cap = capability_mod.Capability.init(
-        gpa, "mean", 1, "GSL mean",
+        gpa,
+        "mean",
+        1,
+        "GSL mean",
         &.{capability_mod.TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         capability_mod.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .gsl,
@@ -3839,7 +3841,6 @@ test "CapabilityRegistry toJson empty registry" {
     try std.testing.expect(std.mem.eql(u8, json, "{\"capabilities\":[]}"));
 }
 
-
 // ─── S4: Error Normalization Tests ─────────────────────────────────────────
 
 test "YamoriError.errorDescription returns non-empty string for all errors" {
@@ -4030,7 +4031,7 @@ test "Dispatcher.dispatch returns UnknownOperation for unregistered op" {
     defer provenance.deinit();
 
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-    const input: []const f64 = &[_]f64{ 1.0 };
+    const input: []const f64 = &[_]f64{1.0};
     const result = dispatcher.dispatch(gpa, "nonexistent", &.{input});
     if (result) |_| {
         try std.testing.expect(false);
@@ -4053,13 +4054,15 @@ test "Dispatcher.dispatch routes to Arrow backend for .arrow selector" {
 
     // Register Arrow capability
     const cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap);
-
 
     // Register Arrow function
     const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
@@ -4077,7 +4080,7 @@ test "Dispatcher.dispatch routes to Arrow backend for .arrow selector" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{ &input }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
     defer result.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 3), result.count);
@@ -4097,13 +4100,15 @@ test "Dispatcher.dispatch routes to GSL backend for .gsl selector" {
 
     // Register GSL capability
     const cap = Capability.init(
-        gpa, "mean", 1, "GSL mean",
+        gpa,
+        "mean",
+        1,
+        "GSL mean",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .gsl,
     );
     try cap_reg.register(cap);
-
 
     // Register GSL function
     const gsl_fn = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
@@ -4124,7 +4129,7 @@ test "Dispatcher.dispatch routes to GSL backend for .gsl selector" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "mean", &.{ &input }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "mean", &.{&input}) catch |err| return err;
     defer result.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 1), result.count);
@@ -4141,8 +4146,11 @@ test "Dispatcher.dispatch uses Arrow for .default backend selector" {
 
     // Register capability with default backend
     const cap = Capability.init(
-        gpa, "add", 1, "Default backend",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }, TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        gpa,
+        "add",
+        1,
+        "Default backend",
+        &.{ TypeDescriptor{ .category = .vector, .element_type = .f64 }, TypeDescriptor{ .category = .vector, .element_type = .f64 } },
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .default,
     );
@@ -4164,7 +4172,7 @@ test "Dispatcher.dispatch uses Arrow for .default backend selector" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{ &input }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
     defer result.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 3), result.count);
@@ -4184,13 +4192,15 @@ test "Dispatcher.dispatch returns BackendNotAvailable for GSL missing function" 
 
     // Register GSL capability but NO GSL function
     const cap = Capability.init(
-        gpa, "mean", 1, "GSL mean",
+        gpa,
+        "mean",
+        1,
+        "GSL mean",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .gsl,
     );
     try cap_reg.register(cap);
-
 
     var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
     defer selector.deinit();
@@ -4201,7 +4211,7 @@ test "Dispatcher.dispatch returns BackendNotAvailable for GSL missing function" 
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = dispatcher.dispatch(gpa, "mean", &.{ &input });
+    const result = dispatcher.dispatch(gpa, "mean", &.{&input});
     if (result) |_| {
         try std.testing.expect(false);
     } else |err| {
@@ -4222,13 +4232,15 @@ test "Dispatcher.dispatch rejects mismatched input lengths" {
     defer gsl_reg.deinit();
 
     const cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap);
-
 
     const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
         .name = "add",
@@ -4267,13 +4279,15 @@ test "Dispatcher.dispatch returns BackendComputeFailed for null inputs" {
     defer gsl_reg.deinit();
 
     const cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap);
-
 
     const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
         .name = "add",
@@ -4310,13 +4324,15 @@ test "Dispatcher.dispatch returns InvalidOperationInput for empty input slice" {
     defer gsl_reg.deinit();
 
     const cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap);
-
 
     const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
         .name = "add",
@@ -4354,13 +4370,15 @@ test "DispatchResult.deinit frees memory and zeros fields" {
     defer gsl_reg.deinit();
 
     const cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap);
-
 
     const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
         .name = "add",
@@ -4377,7 +4395,7 @@ test "DispatchResult.deinit frees memory and zeros fields" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{ &input }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
 
     const orig_count = result.count;
     try std.testing.expect(orig_count == 3);
@@ -4399,13 +4417,15 @@ test "Dispatcher dispatches Arrow function and validates input lengths" {
     defer gsl_reg.deinit();
 
     const cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap);
-
 
     const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
         .name = "add",
@@ -4423,7 +4443,7 @@ test "Dispatcher dispatches Arrow function and validates input lengths" {
 
     // Test with 5-element input
     const input = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{ &input }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
     defer result.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 5), result.count);
@@ -4441,13 +4461,15 @@ test "Dispatcher dispatches GSL function and validates GSL input" {
     defer gsl_reg.deinit();
 
     const cap = Capability.init(
-        gpa, "mean", 1, "GSL mean",
+        gpa,
+        "mean",
+        1,
+        "GSL mean",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .gsl,
     );
     try cap_reg.register(cap);
-
 
     const gsl_fn = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
         .name = "mean",
@@ -4467,7 +4489,7 @@ test "Dispatcher dispatches GSL function and validates GSL input" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [10]f64{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0 };
-    var result = dispatcher.dispatch(gpa, "mean", &.{ &input }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "mean", &.{&input}) catch |err| return err;
     defer result.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 1), result.count);
@@ -4484,22 +4506,26 @@ test "Dispatcher dispatches multiple operations on same registry" {
 
     // Register two Arrow capabilities
     const cap1 = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap1);
 
-
     const cap2 = Capability.init(
-        gpa, "subtract", 1, "Arrow subtract",
+        gpa,
+        "subtract",
+        1,
+        "Arrow subtract",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
     try cap_reg.register(cap2);
-
 
     // Register corresponding Arrow functions
     const fn1 = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
@@ -4523,16 +4549,15 @@ test "Dispatcher dispatches multiple operations on same registry" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input1 = [2]f64{ 10.0, 20.0 };
-    var result1 = dispatcher.dispatch(gpa, "add", &.{ &input1 }) catch |err| return err;
+    var result1 = dispatcher.dispatch(gpa, "add", &.{&input1}) catch |err| return err;
     defer result1.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 2), result1.count);
 
     const input2 = [2]f64{ 5.0, 15.0 };
-    var result2 = dispatcher.dispatch(gpa, "subtract", &.{ &input2 }) catch |err| return err;
+    var result2 = dispatcher.dispatch(gpa, "subtract", &.{&input2}) catch |err| return err;
     defer result2.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 2), result2.count);
 }
-
 
 // ═══════════════════════════════════════════════════════════════════
 // S7: Dispatch Provenance Tests
@@ -4792,7 +4817,10 @@ test "Dispatcher dispatch records provenance on success" {
 
     // Register capability
     const cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
@@ -4810,7 +4838,7 @@ test "Dispatcher dispatch records provenance on success" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{ &input }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
     defer result.deinit(gpa);
 
     try expectEqual(@as(usize, 1), provenance.count());
@@ -4841,7 +4869,7 @@ test "Dispatcher dispatch records provenance on failure (unknown op)" {
     const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    _ = dispatcher.dispatch(gpa, "nonexistent", &.{ &input }) catch {};
+    _ = dispatcher.dispatch(gpa, "nonexistent", &.{&input}) catch {};
 
     try expectEqual(@as(usize, 1), provenance.count());
     const record = provenance.get(0) orelse unreachable;
@@ -4977,7 +5005,10 @@ test "End-to-end provenance tracks mixed operations and backends" {
 
     // Register Arrow capability
     const arrow_cap = Capability.init(
-        gpa, "add", 1, "Arrow add",
+        gpa,
+        "add",
+        1,
+        "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
@@ -4995,14 +5026,14 @@ test "End-to-end provenance tracks mixed operations and backends" {
 
     // Dispatch add (success)
     const input1 = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{ &input1 }) catch |err| return err;
+    var result = dispatcher.dispatch(gpa, "add", &.{&input1}) catch |err| return err;
     defer result.deinit(gpa);
 
     // Dispatch unknown (failure)
-    _ = dispatcher.dispatch(gpa, "unknown", &.{ &input1 }) catch {};
+    _ = dispatcher.dispatch(gpa, "unknown", &.{&input1}) catch {};
 
     // Dispatch add again
-    var result2 = dispatcher.dispatch(gpa, "add", &.{ &input1 }) catch |err| return err;
+    var result2 = dispatcher.dispatch(gpa, "add", &.{&input1}) catch |err| return err;
     defer result2.deinit(gpa);
 
     try expectEqual(@as(usize, 3), provenance.count());
