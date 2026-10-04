@@ -10,6 +10,10 @@ pub const ArrowError = error{
     NullInput,
 };
 
+/// Import YamoriError for mapping Arrow errors to the unified error set.
+const yamori_err = @import("error");
+const YamoriError = yamori_err.YamoriError;
+
 pub const ArrowComputeMap = struct {
     const Entry = struct {
         capability_name: []const u8,
@@ -139,5 +143,18 @@ pub const ArrowAdapter = struct {
                 return ArrowError.InvalidInputLength;
             }
         }
+    }
+
+    /// Map Arrow-specific errors to unified YamoriError types.
+    pub fn mapArrowError(arrow_err: ArrowError) YamoriError {
+        const tag = @intFromError(arrow_err);
+        return switch (tag) {
+            @intFromError(ArrowError.FunctionNotFound) => YamoriError.UnknownOperation,
+            @intFromError(ArrowError.InvalidDataType) => YamoriError.BackendInvalidDataType,
+            @intFromError(ArrowError.InvalidInputLength) => YamoriError.InvalidOperationInput,
+            @intFromError(ArrowError.ComputeFailed) => YamoriError.BackendComputeFailed,
+            @intFromError(ArrowError.NullInput) => YamoriError.InvalidOperationInput,
+            else => unreachable,
+        };
     }
 };

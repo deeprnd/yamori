@@ -10,6 +10,10 @@ pub const GSLAdapterError = error{
     MemoryAllocationFailed,
 };
 
+/// Import YamoriError for mapping GSL errors to the unified error set.
+const yamori_err = @import("error");
+const YamoriError = yamori_err.YamoriError;
+
 pub const GSLFunctionMap = struct {
     const Entry = struct {
         capability_name: []const u8,
@@ -111,5 +115,18 @@ pub const GSLAdapter = struct {
                 return GSLAdapterError.InvalidInput;
             }
         }
+    }
+
+    /// Map GSL-specific errors to unified YamoriError types.
+    pub fn mapGSLAdapterError(gsl_err: GSLAdapterError) YamoriError {
+        const tag = @intFromError(gsl_err);
+        return switch (tag) {
+            @intFromError(GSLAdapterError.LibraryNotFound) => YamoriError.BackendNotAvailable,
+            @intFromError(GSLAdapterError.FunctionNotFound) => YamoriError.UnknownOperation,
+            @intFromError(GSLAdapterError.InvalidInput) => YamoriError.InvalidOperationInput,
+            @intFromError(GSLAdapterError.ComputeFailed) => YamoriError.BackendComputeFailed,
+            @intFromError(GSLAdapterError.MemoryAllocationFailed) => YamoriError.BackendInsufficientMemory,
+            else => unreachable,
+        };
     }
 };

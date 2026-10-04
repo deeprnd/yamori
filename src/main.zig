@@ -3838,3 +3838,147 @@ test "CapabilityRegistry toJson empty registry" {
     // Should produce {"capabilities":[]}
     try std.testing.expect(std.mem.eql(u8, json, "{\"capabilities\":[]}"));
 }
+
+
+// ─── S4: Error Normalization Tests ─────────────────────────────────────────
+
+test "YamoriError.errorDescription returns non-empty string for all errors" {
+    const error_mod = @import("error");
+    const YamoriError = error_mod.YamoriError;
+
+    // Manually verify each variant returns a non-empty description
+    try std.testing.expect(error_mod.errorDescription(YamoriError.UnknownOperation).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.OperationNotSupported).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.InvalidOperationInput).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.OperationTimeout).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.BackendNotAvailable).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.BackendComputeFailed).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.BackendInvalidDataType).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.BackendInsufficientMemory).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.CapabilityNotFound).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.DuplicateCapability).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.InvalidCapability).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.InitializationFailed).len > 0);
+    try std.testing.expect(error_mod.errorDescription(YamoriError.InternalError).len > 0);
+}
+
+test "YamoriError.errorDescription returns correct strings" {
+    const error_mod = @import("error");
+    const YamoriError = error_mod.YamoriError;
+
+    try std.testing.expectEqualStrings(
+        "Operation not found in capability registry",
+        error_mod.errorDescription(YamoriError.UnknownOperation),
+    );
+    try std.testing.expectEqualStrings(
+        "Backend computation failed",
+        error_mod.errorDescription(YamoriError.BackendComputeFailed),
+    );
+    try std.testing.expectEqualStrings(
+        "Requested backend is not available",
+        error_mod.errorDescription(YamoriError.BackendNotAvailable),
+    );
+    try std.testing.expectEqualStrings(
+        "Capability not found in registry",
+        error_mod.errorDescription(YamoriError.CapabilityNotFound),
+    );
+    try std.testing.expectEqualStrings(
+        "Backend ran out of memory",
+        error_mod.errorDescription(YamoriError.BackendInsufficientMemory),
+    );
+}
+
+test "ArrowAdapter.mapArrowError maps FunctionNotFound to UnknownOperation" {
+    const arrow_err = arrow_mod.ArrowError.FunctionNotFound;
+    const normalized = arrow_mod.ArrowAdapter.mapArrowError(arrow_err);
+    try std.testing.expectEqualStrings("UnknownOperation", @errorName(normalized));
+}
+
+test "ArrowAdapter.mapArrowError maps InvalidDataType to BackendInvalidDataType" {
+    const arrow_err = arrow_mod.ArrowError.InvalidDataType;
+    const normalized = arrow_mod.ArrowAdapter.mapArrowError(arrow_err);
+    try std.testing.expectEqualStrings("BackendInvalidDataType", @errorName(normalized));
+}
+
+test "ArrowAdapter.mapArrowError maps InvalidInputLength to InvalidOperationInput" {
+    const arrow_err = arrow_mod.ArrowError.InvalidInputLength;
+    const normalized = arrow_mod.ArrowAdapter.mapArrowError(arrow_err);
+    try std.testing.expectEqualStrings("InvalidOperationInput", @errorName(normalized));
+}
+
+test "ArrowAdapter.mapArrowError maps ComputeFailed to BackendComputeFailed" {
+    const arrow_err = arrow_mod.ArrowError.ComputeFailed;
+    const normalized = arrow_mod.ArrowAdapter.mapArrowError(arrow_err);
+    try std.testing.expectEqualStrings("BackendComputeFailed", @errorName(normalized));
+}
+
+test "ArrowAdapter.mapArrowError maps NullInput to InvalidOperationInput" {
+    const arrow_err = arrow_mod.ArrowError.NullInput;
+    const normalized = arrow_mod.ArrowAdapter.mapArrowError(arrow_err);
+    try std.testing.expectEqualStrings("InvalidOperationInput", @errorName(normalized));
+}
+
+test "GSLAdapter.mapGSLAdapterError maps LibraryNotFound to BackendNotAvailable" {
+    const gsl_err = gsl_mod.GSLAdapterError.LibraryNotFound;
+    const normalized = gsl_mod.GSLAdapter.mapGSLAdapterError(gsl_err);
+    try std.testing.expectEqualStrings("BackendNotAvailable", @errorName(normalized));
+}
+
+test "GSLAdapter.mapGSLAdapterError maps FunctionNotFound to UnknownOperation" {
+    const gsl_err = gsl_mod.GSLAdapterError.FunctionNotFound;
+    const normalized = gsl_mod.GSLAdapter.mapGSLAdapterError(gsl_err);
+    try std.testing.expectEqualStrings("UnknownOperation", @errorName(normalized));
+}
+
+test "GSLAdapter.mapGSLAdapterError maps InvalidInput to InvalidOperationInput" {
+    const gsl_err = gsl_mod.GSLAdapterError.InvalidInput;
+    const normalized = gsl_mod.GSLAdapter.mapGSLAdapterError(gsl_err);
+    try std.testing.expectEqualStrings("InvalidOperationInput", @errorName(normalized));
+}
+
+test "GSLAdapter.mapGSLAdapterError maps ComputeFailed to BackendComputeFailed" {
+    const gsl_err = gsl_mod.GSLAdapterError.ComputeFailed;
+    const normalized = gsl_mod.GSLAdapter.mapGSLAdapterError(gsl_err);
+    try std.testing.expectEqualStrings("BackendComputeFailed", @errorName(normalized));
+}
+
+test "GSLAdapter.mapGSLAdapterError maps MemoryAllocationFailed to BackendInsufficientMemory" {
+    const gsl_err = gsl_mod.GSLAdapterError.MemoryAllocationFailed;
+    const normalized = gsl_mod.GSLAdapter.mapGSLAdapterError(gsl_err);
+    try std.testing.expectEqualStrings("BackendInsufficientMemory", @errorName(normalized));
+}
+
+test "Dispatch error normalization converts Arrow ComputeFailed to YamoriError" {
+    const arrow_err = arrow_mod.ArrowError.ComputeFailed;
+    const normalized = arrow_mod.ArrowAdapter.mapArrowError(arrow_err);
+    try std.testing.expectEqualStrings("BackendComputeFailed", @errorName(normalized));
+}
+
+test "Dispatch error normalization converts GSL MemoryAllocationFailed to YamoriError" {
+    const gsl_err = gsl_mod.GSLAdapterError.MemoryAllocationFailed;
+    const normalized = gsl_mod.GSLAdapter.mapGSLAdapterError(gsl_err);
+    try std.testing.expectEqualStrings("BackendInsufficientMemory", @errorName(normalized));
+}
+
+test "All YamoriError variants have descriptions" {
+    const error_mod = @import("error");
+    const YamoriError = error_mod.YamoriError;
+
+    // Manually verify each variant is covered by errorDescription
+    _ = error_mod.errorDescription(YamoriError.UnknownOperation);
+    _ = error_mod.errorDescription(YamoriError.OperationNotSupported);
+    _ = error_mod.errorDescription(YamoriError.InvalidOperationInput);
+    _ = error_mod.errorDescription(YamoriError.OperationTimeout);
+    _ = error_mod.errorDescription(YamoriError.BackendNotAvailable);
+    _ = error_mod.errorDescription(YamoriError.BackendComputeFailed);
+    _ = error_mod.errorDescription(YamoriError.BackendInvalidDataType);
+    _ = error_mod.errorDescription(YamoriError.BackendInsufficientMemory);
+    _ = error_mod.errorDescription(YamoriError.CapabilityNotFound);
+    _ = error_mod.errorDescription(YamoriError.DuplicateCapability);
+    _ = error_mod.errorDescription(YamoriError.InvalidCapability);
+    _ = error_mod.errorDescription(YamoriError.InitializationFailed);
+    _ = error_mod.errorDescription(YamoriError.InternalError);
+
+    // We manually listed all 13 variants above
+}
+
