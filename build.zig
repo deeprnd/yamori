@@ -35,6 +35,10 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // --- GSL library linking ---
+    const gsl_include = b.path("build/gsl-2.8/include");
+    const gsl_lib_path = b.path("build/gsl-2.8/lib");
+
     // --- GSL adapter module ---
     const gsl_mod = b.addModule("gsl_adapter", .{
         .root_source_file = b.path("src/gsl_adapter.zig"),
@@ -45,6 +49,21 @@ pub fn build(b: *std.Build) void {
             .{ .name = "error", .module = error_mod },
         },
     });
+    gsl_mod.addIncludePath(gsl_include);
+    gsl_mod.addLibraryPath(gsl_lib_path);
+    gsl_mod.linkSystemLibrary("gsl", .{});
+    gsl_mod.linkSystemLibrary("m", .{});
+
+    // --- GSL bindings module (FFI layer) ---
+    const gsl_bindings_mod = b.addModule("gsl_bindings", .{
+        .root_source_file = b.path("src/gsl_bindings.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gsl_bindings_mod.addIncludePath(gsl_include);
+    gsl_bindings_mod.addLibraryPath(gsl_lib_path);
+    gsl_bindings_mod.linkSystemLibrary("gsl", .{});
+    gsl_bindings_mod.linkSystemLibrary("m", .{});
 
     // --- Arrow adapter module ---
     const arrow_mod = b.addModule("arrow_adapter", .{
@@ -83,6 +102,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "registry", .module = reg_mod },
             .{ .name = "arrow_adapter", .module = arrow_mod },
             .{ .name = "gsl_adapter", .module = gsl_mod },
+            .{ .name = "gsl_bindings", .module = gsl_bindings_mod },
             .{ .name = "error", .module = error_mod },
             .{ .name = "backend_policy", .module = backend_policy_mod },
             .{ .name = "provenance", .module = provenance_mod },
@@ -113,6 +133,7 @@ pub fn build(b: *std.Build) void {
     test_exe_root.addImport("capability", cap_mod);
     test_exe_root.addImport("registry", reg_mod);
     test_exe_root.addImport("gsl_adapter", gsl_mod);
+    test_exe_root.addImport("gsl_bindings", gsl_bindings_mod);
     test_exe_root.addImport("arrow_adapter", arrow_mod);
     test_exe_root.addImport("error", error_mod);
     test_exe_root.addImport("dispatch", dispatch_mod);

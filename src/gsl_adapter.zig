@@ -14,6 +14,9 @@ pub const GSLAdapterError = error{
 const yamori_err = @import("error");
 const YamoriError = yamori_err.YamoriError;
 
+/// Import capability module for Capability type.
+const capability_mod = @import("capability");
+
 pub const GSLFunctionMap = struct {
     const Entry = struct {
         capability_name: []const u8,
@@ -128,5 +131,36 @@ pub const GSLAdapter = struct {
             @intFromError(GSLAdapterError.MemoryAllocationFailed) => YamoriError.BackendInsufficientMemory,
             else => unreachable,
         };
+    }
+
+    /// Register all GSL statistical functions behind the capability registry.
+    /// Each capability is registered with backend_selector = .gsl.
+    pub fn register_gsl_backends(
+        allocator: std.mem.Allocator,
+        cap_reg: *capability_mod.CapabilityRegistry,
+        gsl_reg: *GSLFunctionRegistry,
+    ) !void {
+        inline for (GSLFunctionMap.all) |entry| {
+            const fn_entry = GSLFunctionRegistry.GSLFunctionEntry{
+                .name = entry.capability_name,
+                .gsl_fn_name = entry.gsl_fn,
+                .gsl_header = entry.gsl_header,
+                .min_inputs = 1,
+                .max_inputs = 2,
+            };
+            try gsl_reg.register(fn_entry);
+
+            // Register the capability with gsl backend selector
+            const cap = try capability_mod.Capability.init(
+                allocator,
+                entry.capability_name,
+                1,
+                "GSL " ++ entry.capability_name,
+                &.{capability_mod.TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+                capability_mod.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
+                .gsl,
+            );
+            try cap_reg.register(cap);
+        }
     }
 };

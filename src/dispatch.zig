@@ -24,6 +24,9 @@ const provenance_mod = @import("provenance");
 const ProvenanceBuffer = provenance_mod.ProvenanceBuffer;
 const captureProvenance = provenance_mod.capture;
 
+/// GSL FFI bindings module.
+const gsl_bindings = @import("gsl_bindings");
+
 /// Unified result of a dispatch call.
 /// Caller is responsible for calling deinit(result, gpa) on success.
 pub const DispatchResult = struct {
@@ -163,8 +166,6 @@ fn dispatchGSL(
         return YamoriError.BackendNotAvailable;
     };
 
-    _ = gsl_fn; // reserved for S6 actual GSL call
-
     GSLAdapter.validateGSLInput(inputs) catch {
         const record = captureProvenance(gpa, op_name, backend, inputs, 0, false, "InvalidOperationInput") catch return YamoriError.InternalError;
         self.provenance.append(record) catch {};
@@ -174,9 +175,28 @@ fn dispatchGSL(
     const output = (gpa.alloc(f64, 1)) catch return YamoriError.BackendInsufficientMemory; // GSL functions typically return scalar
     errdefer gpa.free(output);
 
-    // Mock compute: return a placeholder value.
-    // In S6 this will call the actual GSL function.
-    output[0] = 0.0;
+    // Compute using actual GSL functions via FFI bindings
+    const fn_name = gsl_fn.*.gsl_fn_name;
+    if (std.mem.eql(u8, fn_name, "gsl_stats_mean")) {
+        output[0] = gsl_bindings.mean(inputs[0]);
+    } else if (std.mem.eql(u8, fn_name, "gsl_stats_variance")) {
+        output[0] = gsl_bindings.variance(inputs[0]);
+    } else if (std.mem.eql(u8, fn_name, "gsl_stats_sd")) {
+        output[0] = gsl_bindings.sd(inputs[0]);
+    } else if (std.mem.eql(u8, fn_name, "gsl_stats_covariance")) {
+        output[0] = gsl_bindings.covariance(inputs[0], inputs[1]);
+    } else if (std.mem.eql(u8, fn_name, "gsl_stats_correlation")) {
+        output[0] = gsl_bindings.correlation(inputs[0], inputs[1]);
+    } else if (std.mem.eql(u8, fn_name, "gsl_stats_quantile_from_sorted_data")) {
+        output[0] = gsl_bindings.quantile(inputs[0], 0.5);
+    } else if (std.mem.eql(u8, fn_name, "gsl_stats_median_from_sorted_data")) {
+        output[0] = gsl_bindings.median(inputs[0]);
+    } else {
+        // Unknown GSL function
+        const record = captureProvenance(gpa, op_name, backend, inputs, 0, false, "UnknownOperation") catch return YamoriError.InternalError;
+        self.provenance.append(record) catch {};
+        return YamoriError.UnknownOperation;
+    }
 
     const record = captureProvenance(gpa, op_name, backend, inputs, output.len, true, null) catch return YamoriError.InternalError;
     self.provenance.append(record) catch {};
