@@ -2,6 +2,10 @@
 # Coverage report generator for yamori (Zig project).
 # Usage: coverage-yamori.sh <job-name>
 set -uo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT_DIR"
+
 JOB="${1:?Usage: coverage-yamori.sh <job-name>}"
 
 _start=$(date +%s)
