@@ -29,9 +29,9 @@ Commands:
   sanitize-check-all      Runs all sanitizer checks (currently just yamori)
 
 Notes:
+  - gitleaks and Zig ReleaseSafe are the only active security checks.
   - CodeQL, seccomp, proof, and ASan/UBSan checks are N/A — Yamori is a
     pure-Zig project with no C substrate, no Qt terminal, and no CBMC proof.
-  - gitleaks and Zig ReleaseSafe are the only active security checks.
 EOF
 }
 
@@ -58,18 +58,10 @@ cmd_sanitize_check_yamori() {
     zig build test -Doptimize=ReleaseSafe
 }
 
-# ── Qt / CodeQL / Seccomp / Proof (all N/A) ────────────────────────────────
+# ── Qt / CodeQL (all N/A) ─────────────────────────────────────────────────
 
 cmd_codeql_check_yamori() {
   echo "N/A — CodeQL does not support Zig"
-}
-
-cmd_seccomp_check_yamori() {
-  echo "N/A — Yamori has no C substrate tile infrastructure"
-}
-
-cmd_proof_check_yamori() {
-  echo "N/A — no CBMC formal verification for Zig"
 }
 
 cmd_sanitize_check_qt() {
@@ -89,8 +81,6 @@ case "${1:-}" in
   sanitize-check-yamori)  cmd_sanitize_check_yamori ;;
   sanitize-check-all)     cmd_sanitize_check_all ;;
   codeql-check-yamori)    cmd_codeql_check_yamori ;;
-  seccomp-check-yamori)   cmd_seccomp_check_yamori ;;
-  proof-check-yamori)     cmd_proof_check_yamori ;;
   sanitize-check-qt)      cmd_sanitize_check_qt ;;
   ""|-h|--help|help)
     usage

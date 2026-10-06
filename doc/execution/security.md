@@ -259,12 +259,6 @@ Security check entrypoints:
 - `just security-codeql-check-fd`
 - `just security-codeql-check-tk`
 - `just security-codeql-check-all`
-- `just security-seccomp-check-fd`
-- `just security-seccomp-check-tk`
-- `just security-seccomp-check-all`
-- `just security-proof-check-fd`
-- `just security-proof-check-tk`
-- `just security-proof-check-all`
 - `just security-sanitize-check-fd`
 - `just security-sanitize-check-tk`
 - `just security-sanitize-check-all`
@@ -274,9 +268,7 @@ Security check entrypoints:
 
 1. `security-codeql-check-all`
 2. `security-gitleaks-check-all`
-3. `security-seccomp-check-all`
-4. `security-proof-check-all`
-5. `security-sanitize-check-all`
+3. `security-sanitize-check-all`
 
 The aggregate command is badge-wrapped through
 `contrib/tool/readme/run-badged-command.py` so README security status is updated by
@@ -297,18 +289,6 @@ CodeQL:
   open upstream issue in the `justfile`
 - the real implementation remains in `contrib/security/security.sh codeql-check-fd`
   for when that path is re-enabled
-
-Seccomp:
-
-- `security-seccomp-check-fd` is currently a no-op in the `justfile`
-- the real script command is `contrib/security/security.sh seccomp-check-fd`
-- Yamori-owned Zig code has no active seccomp policy checker yet
-
-Proof:
-
-- `security-proof-check-fd` runs `./contrib/build/make-j proof`
-- `security-proof-check-tk` is currently a no-op because there is no Zig proof
-  harness yet
 
 Sanitizers:
 
