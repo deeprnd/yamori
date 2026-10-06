@@ -42,7 +42,9 @@ pub fn correlation(data1: []const f64, data2: []const f64) f64 {
 }
 
 /// Compute the quantile from sorted data at fraction f (0.0 ≤ f ≤ 1.0).
+/// Returns NaN if f is outside [0.0, 1.0] — callers should validate before calling.
 pub fn quantile(sorted_data: []const f64, f: f64) f64 {
+    if (f < 0.0 or f > 1.0) return std.math.nan(f64);
     return gsl_stats_quantile_from_sorted_data(sorted_data.ptr, 1, sorted_data.len, f);
 }
 
