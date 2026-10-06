@@ -9,6 +9,8 @@ pub const CapabilityCategory = capability_mod.CapabilityCategory;
 pub const ElementType = capability_mod.ElementType;
 pub const BackendSelector = capability_mod.BackendSelector;
 pub const CapabilityRegistry = registry_mod.CapabilityRegistry;
+const BackendSelectorStruct = backend_policy_mod.BackendSelector;
+const BackendPolicy = backend_policy_mod.BackendPolicy;
 
 pub const formula = struct {
     pub const NamedFormula = struct {
@@ -940,9 +942,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 // ─── Capability Tests ─────────────────────────────────────────────────────
 
 test "Capability.init creates valid capability" {
-    const gpa = std.testing.allocator;
     const cap = Capability.init(
-        gpa,
         "add",
         1,
         "Element-wise addition",
@@ -953,7 +953,6 @@ test "Capability.init creates valid capability" {
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
-    defer cap.deinit(gpa);
 
     try std.testing.expect(std.mem.eql(u8, cap.name, "add"));
     try std.testing.expectEqual(@as(u32, 1), cap.version);
@@ -962,9 +961,7 @@ test "Capability.init creates valid capability" {
 }
 
 test "Capability.init stores description correctly" {
-    const gpa = std.testing.allocator;
     const cap = Capability.init(
-        gpa,
         "mean",
         2,
         "Compute arithmetic mean",
@@ -972,7 +969,6 @@ test "Capability.init stores description correctly" {
         TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .gsl,
     );
-    defer cap.deinit(gpa);
 
     try std.testing.expectEqualStrings("mean", cap.name);
     try std.testing.expectEqualStrings("Compute arithmetic mean", cap.description);
@@ -981,9 +977,7 @@ test "Capability.init stores description correctly" {
 }
 
 test "Capability.init with empty input_types" {
-    const gpa = std.testing.allocator;
     const cap = Capability.init(
-        gpa,
         "constant",
         1,
         "Returns a constant value",
@@ -991,7 +985,6 @@ test "Capability.init with empty input_types" {
         TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .default,
     );
-    defer cap.deinit(gpa);
 
     try std.testing.expectEqual(@as(u32, 0), cap.input_types.len);
     try std.testing.expectEqualStrings("default", @tagName(cap.backend_selector));
@@ -1000,12 +993,8 @@ test "Capability.init with empty input_types" {
 // ─── Capability Registry Tests ──────────────────────────────────────────
 
 test "CapabilityRegistry.register and get" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
-
+    var caps: [1]Capability = undefined;
     const cap = Capability.init(
-        gpa,
         "mean",
         1,
         "Compute mean",
@@ -1013,8 +1002,11 @@ test "CapabilityRegistry.register and get" {
         TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .arrow,
     );
-    // Ownership transfers to registry on register; do NOT deinit cap here.
-    try reg.register(cap);
+    caps[0] = cap;
+
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 1);
+
     try std.testing.expect(reg.contains("mean"));
 
     const found = reg.get("mean") orelse unreachable;
@@ -1023,20 +1015,15 @@ test "CapabilityRegistry.register and get" {
 }
 
 test "CapabilityRegistry.get returns null for missing key" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &[_]Capability{}, 0);
 
     try std.testing.expect(reg.get("nonexistent") == null);
 }
 
 test "CapabilityRegistry.register duplicate returns error" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
-
+    var caps: [1]Capability = undefined;
     const cap = Capability.init(
-        gpa,
         "add",
         1,
         "Addition",
@@ -1047,12 +1034,13 @@ test "CapabilityRegistry.register duplicate returns error" {
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
-    // Ownership transfers to registry on register.
-    try reg.register(cap);
+    caps[0] = cap;
 
-    // Create a second capability with the same name.
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 1);
+
+    // Try to register a duplicate — must fail.
     const cap2 = Capability.init(
-        gpa,
         "add",
         2,
         "Addition v2",
@@ -1060,11 +1048,8 @@ test "CapabilityRegistry.register duplicate returns error" {
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .gsl,
     );
-    // This must fail — duplicate name.
-    const result = reg.register(cap2);
+    const result = reg.register(&cap2);
     try std.testing.expect(result == registry_mod.RegistryError.DuplicateCapability);
-    // Deinit cap2 — it was never registered.
-    cap2.deinit(gpa);
 
     // Ensure the original is still retrievable.
     const found = reg.get("add") orelse unreachable;
@@ -1072,46 +1057,34 @@ test "CapabilityRegistry.register duplicate returns error" {
 }
 
 test "CapabilityRegistry.count returns correct number" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
+    var caps: [2]Capability = undefined;
+    caps[0] = Capability.init("add", 1, "add", &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }}, TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
+    caps[1] = Capability.init("sub", 1, "sub", &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }}, TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
 
-    try std.testing.expectEqual(@as(usize, 0), reg.count());
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 2);
 
-    const cap1 = Capability.init(gpa, "add", 1, "add", &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }}, TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
-    try reg.register(cap1);
-    try std.testing.expectEqual(@as(usize, 1), reg.count());
-
-    const cap2 = Capability.init(gpa, "sub", 1, "sub", &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }}, TypeDescriptor{ .category = .vector, .element_type = .f64 }, .arrow);
-    try reg.register(cap2);
     try std.testing.expectEqual(@as(usize, 2), reg.count());
+    try std.testing.expectEqualStrings("add", reg.get("add").?.name);
+    try std.testing.expectEqualStrings("sub", reg.get("sub").?.name);
 }
 
 test "CapabilityRegistry.iterate returns all entries" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
+    var caps: [2]Capability = undefined;
+    caps[0] = Capability.init("alpha", 1, "a", &.{}, TypeDescriptor{ .category = .scalar, .element_type = .f64 }, .arrow);
+    caps[1] = Capability.init("beta", 1, "b", &.{}, TypeDescriptor{ .category = .scalar, .element_type = .f64 }, .gsl);
 
-    const caps = [_]Capability{
-        Capability.init(gpa, "alpha", 1, "a", &.{}, TypeDescriptor{ .category = .scalar, .element_type = .f64 }, .arrow),
-        Capability.init(gpa, "beta", 1, "b", &.{}, TypeDescriptor{ .category = .scalar, .element_type = .f64 }, .gsl),
-    };
-    var cap_holders: [2]Capability = caps;
-    errdefer for (&cap_holders) |*c| c.deinit(gpa);
-
-    for (cap_holders[0..]) |*c| {
-        try reg.register(c.*);
-    }
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 2);
 
     var found_count: usize = 0;
-    var it = reg.iterator();
-    while (it.next()) |entry| {
-        found_count += 1;
-        _ = entry.key_ptr;
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        if (reg.capabilities[i] != null) {
+            found_count += 1;
+        }
     }
     try std.testing.expectEqual(@as(usize, 2), found_count);
-
-    // Ownership transferred to registry on register; do NOT deinit cap_holders here.
 }
 
 // ─── Arrow Compute Map Tests ────────────────────────────────────────────
@@ -1159,66 +1132,6 @@ test "ArrowComputeMap.lookup returns correct arrow fn names" {
     try std.testing.expectEqualStrings("count", arrow_mod.ArrowComputeMap.lookup("count").?);
     try std.testing.expectEqualStrings("stddev", arrow_mod.ArrowComputeMap.lookup("std_dev").?);
     try std.testing.expectEqualStrings("variance", arrow_mod.ArrowComputeMap.lookup("variance").?);
-}
-
-// ─── ArrowFunctionRegistry Tests (Task 3) ───────────────────────────────
-
-test "ArrowFunctionRegistry.register and get" {
-    const gpa = std.testing.allocator;
-    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    const fn_entry = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try reg.register(fn_entry);
-
-    const found = reg.get("add") orelse unreachable;
-    try std.testing.expectEqualStrings("add", found.name);
-    try std.testing.expectEqualStrings("add", found.arrow_fn_name);
-}
-
-test "ArrowFunctionRegistry.get returns null for missing key" {
-    const gpa = std.testing.allocator;
-    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    try std.testing.expect(reg.get("nonexistent") == null);
-}
-
-test "ArrowFunctionRegistry.register rejects duplicate" {
-    const gpa = std.testing.allocator;
-    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    const fn_entry = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "sum",
-        .arrow_fn_name = "sum",
-    };
-    try reg.register(fn_entry);
-    try std.testing.expectError(
-        arrow_mod.ArrowError.ComputeFailed,
-        reg.register(fn_entry),
-    );
-}
-
-test "ArrowFunctionRegistry multiple registrations" {
-    const gpa = std.testing.allocator;
-    var reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    const fns = [_]arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .{ .name = "add", .arrow_fn_name = "add" },
-        .{ .name = "subtract", .arrow_fn_name = "subtract" },
-        .{ .name = "sum", .arrow_fn_name = "sum" },
-    };
-    for (fns) |f| try reg.register(f);
-
-    try std.testing.expectEqual(@as(usize, 3), reg.functions.count());
-    try std.testing.expect(reg.get("add") != null);
-    try std.testing.expect(reg.get("subtract") != null);
-    try std.testing.expect(reg.get("sum") != null);
 }
 
 // ─── ArrowAdapter Input Validation Tests (Task 5) ───────────────────────
@@ -1295,76 +1208,6 @@ test "GSLAdapterError types are defined" {
     try std.testing.expect(std.mem.eql(u8, @errorName(gsl_mod.GSLAdapterError.MemoryAllocationFailed), "MemoryAllocationFailed"));
 }
 
-// ─── GSLFunctionRegistry Tests (Task 3) ─────────────────────────────────
-
-test "GSLFunctionRegistry.register and get" {
-    const gpa = std.testing.allocator;
-    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "mean",
-        .gsl_fn_name = "gsl_stats_mean",
-        .gsl_header = "mean",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try reg.register(entry);
-
-    const found = reg.get("mean") orelse unreachable;
-    try std.testing.expectEqualStrings("gsl_stats_mean", found.gsl_fn_name);
-    try std.testing.expectEqualStrings("mean", found.gsl_header);
-    try std.testing.expectEqual(@as(usize, 1), found.min_inputs);
-}
-
-test "GSLFunctionRegistry.get returns null for missing key" {
-    const gpa = std.testing.allocator;
-    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    try std.testing.expect(reg.get("nonexistent") == null);
-}
-
-test "GSLFunctionRegistry multiple registrations" {
-    const gpa = std.testing.allocator;
-    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    const entries = [_]gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .{ .name = "mean", .gsl_fn_name = "gsl_stats_mean", .gsl_header = "mean", .min_inputs = 1, .max_inputs = 1 },
-        .{ .name = "variance", .gsl_fn_name = "gsl_stats_variance", .gsl_header = "variance", .min_inputs = 1, .max_inputs = 1 },
-        .{ .name = "std_dev", .gsl_fn_name = "gsl_stats_sd", .gsl_header = "sd", .min_inputs = 1, .max_inputs = 1 },
-    };
-    for (entries) |e| try reg.register(e);
-
-    try std.testing.expectEqual(@as(usize, 3), reg.functions.count());
-    try std.testing.expect(reg.get("mean") != null);
-    try std.testing.expect(reg.get("variance") != null);
-    try std.testing.expect(reg.get("std_dev") != null);
-}
-
-// ─── GSL Populated Registry Tests (Task 4) ─────────────────────────────
-
-test "GSLFunctionRegistry populates from GSLFunctionMap" {
-    const gpa = std.testing.allocator;
-    var reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer reg.deinit();
-
-    inline for (gsl_mod.GSLFunctionMap.all) |entry| {
-        const fn_entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-            .name = entry.capability_name,
-            .gsl_fn_name = entry.gsl_fn,
-            .gsl_header = entry.gsl_header,
-            .min_inputs = 1,
-            .max_inputs = 2,
-        };
-        try reg.register(fn_entry);
-    }
-
-    // Verify all mappings are registered
-    try std.testing.expectEqual(@as(usize, 8), reg.functions.count());
-}
-
 // ─── GSLAdapter Input Validation Tests (Task 5) ─────────────────────────
 
 test "GSLAdapter.validateGSLInput accepts valid f64 vectors" {
@@ -1400,13 +1243,8 @@ test "GSLAdapter.validateGSLInput rejects empty input list" {
 // ─── GSL/Arrow Coexistence Tests (Task 6) ──────────────────────────────
 
 test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
-    const gpa = std.testing.allocator;
-    var cap_reg = registry_mod.CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-
-    // Register Arrow capability
-    const arrow_cap = capability_mod.Capability.init(
-        gpa,
+    var caps: [2]Capability = undefined;
+    caps[0] = capability_mod.Capability.init(
         "add",
         1,
         "Arrow add",
@@ -1414,11 +1252,7 @@ test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
         capability_mod.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .arrow,
     );
-    try cap_reg.register(arrow_cap);
-
-    // Register GSL capability
-    const gsl_cap = capability_mod.Capability.init(
-        gpa,
+    caps[1] = capability_mod.Capability.init(
         "mean",
         1,
         "GSL mean",
@@ -1426,58 +1260,13 @@ test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
         capability_mod.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .gsl,
     );
-    try cap_reg.register(gsl_cap);
 
-    try std.testing.expectEqual(@as(usize, 2), cap_reg.count());
-    try std.testing.expectEqualStrings("arrow", @tagName(cap_reg.get("add").?.backend_selector));
-    try std.testing.expectEqualStrings("gsl", @tagName(cap_reg.get("mean").?.backend_selector));
-}
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 2);
 
-// ─── Integration Tests (Task 4) ─────────────────────────────────────────
-
-test "ArrowFunctionRegistry populates from CapabilityRegistry" {
-    const gpa = std.testing.allocator;
-    var cap_reg = registry_mod.CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-
-    // Create capabilities that match ArrowComputeMap entries
-    inline for (arrow_mod.ArrowComputeMap.all) |entry| {
-        const cap = capability_mod.Capability.init(
-            gpa,
-            entry.capability_name,
-            1,
-            "Arrow-implemented " ++ entry.capability_name,
-            &.{capability_mod.TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-            capability_mod.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-            .arrow,
-        );
-        // Ownership transfers to cap_reg on register; do NOT deinit cap here.
-        try cap_reg.register(cap);
-
-        const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-            .name = entry.capability_name,
-            .arrow_fn_name = entry.arrow_fn,
-        };
-        try arrow_reg.register(arrow_fn);
-    }
-
-    // Verify all capabilities have matching Arrow functions
-    var it = cap_reg.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.backend_selector != .arrow) continue;
-        const arrow_fn = arrow_reg.get(entry.value_ptr.name) orelse {
-            try std.testing.expect(false);
-            return;
-        };
-        const expected = arrow_mod.ArrowComputeMap.lookup(entry.value_ptr.name) orelse {
-            try std.testing.expect(false);
-            return;
-        };
-        try std.testing.expectEqualStrings(expected, arrow_fn.arrow_fn_name);
-    }
+    try std.testing.expectEqual(@as(usize, 2), reg.count());
+    try std.testing.expectEqualStrings("arrow", @tagName(reg.get("add").?.backend_selector));
+    try std.testing.expectEqualStrings("gsl", @tagName(reg.get("mean").?.backend_selector));
 }
 
 // ─── Dependency Resolver Tests ──────────────────────────────────────────
@@ -3748,13 +3537,9 @@ test "provenance: all_provenance_built" {
 
 // ─── Registry Serialization Tests (Task 4) ─────────────────────────────
 
-test "CapabilityRegistry toJson round-trip" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
-
-    const cap = Capability.init(
-        gpa,
+test "CapabilityRegistry toJson includes name and version" {
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
         "sum",
         1,
         "Sum elements",
@@ -3762,22 +3547,20 @@ test "CapabilityRegistry toJson round-trip" {
         TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .arrow,
     );
-    try reg.register(cap);
 
-    const json = try reg.toJson(gpa);
-    defer gpa.free(json);
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 1);
+
+    var json_buf: [256]u8 = undefined;
+    const json = try reg.toJson(&json_buf);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"sum\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"version\":1") != null);
 }
 
 test "CapabilityRegistry toJson includes description and backend" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
-
-    const cap = Capability.init(
-        gpa,
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
         "mean",
         2,
         "Compute mean value",
@@ -3785,22 +3568,20 @@ test "CapabilityRegistry toJson includes description and backend" {
         TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .gsl,
     );
-    try reg.register(cap);
 
-    const json = try reg.toJson(gpa);
-    defer gpa.free(json);
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 1);
+
+    var json_buf: [256]u8 = undefined;
+    const json = try reg.toJson(&json_buf);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"description\":\"Compute mean value\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"backend_selector\":\"gsl\"") != null);
 }
 
 test "CapabilityRegistry toJson multiple capabilities" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
-
-    const cap1 = Capability.init(
-        gpa,
+    var caps: [2]Capability = undefined;
+    caps[0] = Capability.init(
         "add",
         1,
         "Addition",
@@ -3808,10 +3589,7 @@ test "CapabilityRegistry toJson multiple capabilities" {
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
-    try reg.register(cap1);
-
-    const cap2 = Capability.init(
-        gpa,
+    caps[1] = Capability.init(
         "multiply",
         1,
         "Multiplication",
@@ -3819,27 +3597,27 @@ test "CapabilityRegistry toJson multiple capabilities" {
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .gsl,
     );
-    try reg.register(cap2);
 
-    const json = try reg.toJson(gpa);
-    defer gpa.free(json);
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &caps, 2);
 
-    // Both entries must be present
+    var json_buf: [512]u8 = undefined;
+    const json = try reg.toJson(&json_buf);
+
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"add\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"multiply\"") != null);
 }
 
 test "CapabilityRegistry toJson empty registry" {
-    const gpa = std.testing.allocator;
-    var reg = CapabilityRegistry.init(gpa);
-    defer reg.deinit();
+    var reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&reg, &[_]Capability{}, 0);
 
-    const json = try reg.toJson(gpa);
-    defer gpa.free(json);
+    var json_buf: [256]u8 = undefined;
+    const json = try reg.toJson(&json_buf);
 
-    // Should produce {"capabilities":[]}
     try std.testing.expect(std.mem.eql(u8, json, "{\"capabilities\":[]}"));
 }
+
 
 // ─── S4: Error Normalization Tests ─────────────────────────────────────────
 
@@ -3989,50 +3767,66 @@ test "All YamoriError variants have descriptions" {
 
 const dispatch_mod = @import("dispatch");
 const backend_policy_mod = @import("backend_policy");
+const provenance_mod = @import("provenance");
 const Dispatcher = dispatch_mod.Dispatcher;
 const DispatchResult = dispatch_mod.DispatchResult;
 const DispatchError = dispatch_mod.DispatchError;
+const ProvenanceRecord = provenance_mod.ProvenanceRecord;
+const ProvenanceBuffer = provenance_mod.ProvenanceBuffer;
+const MaxProvenanceEntries = provenance_mod.MaxProvenanceEntries;
+const MaxProvenanceInputLengths = provenance_mod.MaxProvenanceInputLengths;
+const MaxOverrides = backend_policy_mod.MaxOverrides;
 const yamori_err = @import("error");
 const YamoriError = yamori_err.YamoriError;
 
-test "Dispatcher.init creates a valid dispatcher" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
+// ─── Dispatcher Tests (Heap-Free) ──────────────────────────────────────
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
+test "Dispatcher.init sets all fields" {
+    const caps: [1]Capability = undefined;
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 0);
 
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
+    var prov_buf: [16]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
+
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
+
     try std.testing.expectEqual(&cap_reg, dispatcher.cap_reg);
-    try std.testing.expectEqual(&arrow_reg, dispatcher.arrow_reg);
-    try std.testing.expectEqual(&gsl_reg, dispatcher.gsl_reg);
+    try std.testing.expectEqual(&sel, dispatcher.backend_selector);
+    try std.testing.expectEqual(&prov, dispatcher.provenance);
 }
 
 test "Dispatcher.dispatch returns UnknownOperation for unregistered op" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
+    const caps: [1]Capability = undefined;
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 0);
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
+    var prov_buf: [16]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-    const input: []const f64 = &[_]f64{1.0};
-    const result = dispatcher.dispatch(gpa, "nonexistent", &.{input});
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
+
+    var result_buf: [64]f64 = undefined;
+    const input = [_]f64{ 1.0 };
+    const result = dispatcher.dispatch(
+        "nonexistent", &.{&input}, &result_buf,
+    );
     if (result) |_| {
         try std.testing.expect(false);
     } else |err| {
@@ -4044,44 +3838,33 @@ test "Dispatcher.dispatch returns UnknownOperation for unregistered op" {
 }
 
 test "Dispatcher.dispatch routes to Arrow backend for .arrow selector" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    // Register Arrow capability
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
+        "add", 1, "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
-    try cap_reg.register(cap);
 
-    // Register Arrow function
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 1);
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
+    var prov_buf: [16]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
+    var result_buf: [64]f64 = undefined;
+    const result = dispatcher.dispatch("add", &.{&input}, &result_buf) catch |err| return err;
 
     try std.testing.expectEqual(@as(usize, 3), result.count);
     try std.testing.expectEqual(1.0, result.data[0]);
@@ -4089,1410 +3872,316 @@ test "Dispatcher.dispatch routes to Arrow backend for .arrow selector" {
     try std.testing.expectEqual(3.0, result.data[2]);
 }
 
-test "Dispatcher.dispatch routes to GSL backend for .gsl selector" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    // Register GSL capability
-    const cap = Capability.init(
-        gpa,
-        "mean",
-        1,
-        "GSL mean",
+test "Dispatcher.dispatch returns invalid input for NaN" {
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
+        "add", 1, "Add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .arrow,
+    );
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 1);
+
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
+
+    var prov_buf: [16]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
+
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
+
+    const input = [3]f64{ 1.0, std.math.nan(f64), 3.0 };
+    var result_buf: [64]f64 = undefined;
+    const result = dispatcher.dispatch(
+        "add", &.{&input}, &result_buf,
+    );
+    try std.testing.expect(result == YamoriError.InvalidOperationInput);
+}
+
+test "Dispatcher.dispatch returns invalid input for Inf" {
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
+        "add", 1, "Add",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .arrow,
+    );
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 1);
+
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
+
+    var prov_buf: [16]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
+
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
+
+    const input = [3]f64{ 1.0, std.math.inf(f64), 3.0 };
+    var result_buf: [64]f64 = undefined;
+    const result = dispatcher.dispatch(
+        "add", &.{&input}, &result_buf,
+    );
+    try std.testing.expect(result == YamoriError.InvalidOperationInput);
+}
+
+test "Dispatcher dispatch routes to GSL for .gsl backend" {
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
+        "mean", 1, "GSL mean",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .gsl,
     );
-    try cap_reg.register(cap);
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 1);
 
-    // Register GSL function
-    const gsl_fn = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "mean",
-        .gsl_fn_name = "gsl_stats_mean",
-        .gsl_header = "mean",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(gsl_fn);
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
+    var prov_buf: [16]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
 
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "mean", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
+    const input = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    var result_buf: [64]f64 = undefined;
+    const result = dispatcher.dispatch("mean", &.{&input}, &result_buf) catch |err| return err;
 
     try std.testing.expectEqual(@as(usize, 1), result.count);
+    try std.testing.expectApproxEqAbs(3.0, result.data[0], 1e-10);
 }
 
-test "Dispatcher.dispatch uses Arrow for .default backend selector" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    // Register capability with default backend
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Default backend",
-        &.{ TypeDescriptor{ .category = .vector, .element_type = .f64 }, TypeDescriptor{ .category = .vector, .element_type = .f64 } },
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .default,
-    );
-    try cap_reg.register(cap);
-
-    // Register Arrow function for "add"
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 3), result.count);
-    try std.testing.expectEqual(1.0, result.data[0]);
-    try std.testing.expectEqual(2.0, result.data[1]);
-    try std.testing.expectEqual(3.0, result.data[2]);
-}
-
-test "Dispatcher.dispatch returns BackendNotAvailable for GSL missing function" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    // Register GSL capability but NO GSL function
-    const cap = Capability.init(
-        gpa,
-        "mean",
-        1,
-        "GSL mean",
+test "Dispatcher dispatch routes to Arrow by default for .arrow capability" {
+    var caps: [2]Capability = undefined;
+    caps[0] = Capability.init(
+        "add", 1, "Arrow add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .arrow,
+    );
+    caps[1] = Capability.init(
+        "mean", 1, "GSL mean",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
         .gsl,
     );
-    try cap_reg.register(cap);
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 2);
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
+    var prov_buf: [16]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = dispatcher.dispatch(gpa, "mean", &.{&input});
-    if (result) |_| {
-        try std.testing.expect(false);
-    } else |err| {
-        switch (err) {
-            YamoriError.BackendNotAvailable => {},
-            else => try std.testing.expect(false),
-        }
-    }
-}
-
-test "Dispatcher.dispatch rejects mismatched input lengths" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
     );
-    try cap_reg.register(cap);
 
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
+    // Add via Arrow
+    const input_a = [3]f64{ 1.0, 2.0, 3.0 };
+    var result_buf: [64]f64 = undefined;
+    const result_a = dispatcher.dispatch("add", &.{&input_a}, &result_buf) catch |err| return err;
+    try std.testing.expectEqual(@as(usize, 3), result_a.count);
+    try std.testing.expectEqual(1.0, result_a.data[0]);
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input1 = [3]f64{ 1.0, 2.0, 3.0 };
-    const input2 = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = dispatcher.dispatch(gpa, "add", &.{ &input1, &input2 });
-    if (result) |_| {
-        try std.testing.expect(false);
-    } else |err| {
-        switch (err) {
-            YamoriError.InvalidOperationInput => {},
-            else => try std.testing.expect(false),
-        }
-    }
+    // Mean via GSL
+    const input_m = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    var result_buf2: [64]f64 = undefined;
+    const result_m = dispatcher.dispatch("mean", &.{&input_m}, &result_buf2) catch |err| return err;
+    try std.testing.expectApproxEqAbs(3.0, result_m.data[0], 1e-10);
 }
 
-test "Dispatcher.dispatch returns BackendComputeFailed for null inputs" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
+test "BackendSelector.setOverride and select" {
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .arrow);
 
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
-    );
-    try cap_reg.register(cap);
+    // Default policy should be arrow
+    try std.testing.expectEqual(.arrow, sel.select("any_op", .arrow));
 
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
+    // Set override
+    try sel.setOverride("mean", .gsl);
+    try std.testing.expectEqual(.gsl, sel.select("mean", .arrow));
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
+    // Other ops still use default
+    try std.testing.expectEqual(.arrow, sel.select("add", .arrow));
 
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const result = dispatcher.dispatch(gpa, "add", &.{});
-    if (result) |_| {
-        try std.testing.expect(false);
-    } else |err| {
-        switch (err) {
-            YamoriError.InvalidOperationInput => {},
-            else => try std.testing.expect(false),
-        }
-    }
+    // Clear override
+    sel.clearOverride("mean");
+    try std.testing.expectEqual(.arrow, sel.select("mean", .arrow));
 }
 
-test "Dispatcher.dispatch returns InvalidOperationInput for empty input slice" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
+test "BackendSelector.select uses capability default when no override" {
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
-    );
-    try cap_reg.register(cap);
-
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const empty: []const f64 = &.{};
-    const result = dispatcher.dispatch(gpa, "add", &.{empty});
-    if (result) |_| {
-        try std.testing.expect(false);
-    } else |err| {
-        switch (err) {
-            YamoriError.InvalidOperationInput => {},
-            else => try std.testing.expect(false),
-        }
-    }
+    try std.testing.expectEqual(.arrow, sel.select("add", .arrow));
+    try std.testing.expectEqual(.gsl, sel.select("mean", .gsl));
 }
 
-test "DispatchResult.deinit frees memory and zeros fields" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
-    );
-    try cap_reg.register(cap);
-
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
-
-    const orig_count = result.count;
-    try std.testing.expect(orig_count == 3);
-
-    result.deinit(gpa);
-
-    // After deinit, data should be empty and count should be 0
-    try std.testing.expectEqual(@as(usize, 0), result.count);
-    try std.testing.expectEqual(@as(usize, 0), result.data.len);
-}
-
-test "Dispatcher dispatches Arrow function and validates input lengths" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
-    );
-    try cap_reg.register(cap);
-
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    // Test with 5-element input
-    const input = [5]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 5), result.count);
-    try std.testing.expectEqual(1.0, result.data[0]);
-    try std.testing.expectEqual(5.0, result.data[4]);
-}
-
-test "Dispatcher dispatches GSL function and validates GSL input" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    const cap = Capability.init(
-        gpa,
-        "mean",
-        1,
-        "GSL mean",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const gsl_fn = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "mean",
-        .gsl_fn_name = "gsl_stats_mean",
-        .gsl_header = "mean",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(gsl_fn);
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [10]f64{ 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0 };
-    var result = dispatcher.dispatch(gpa, "mean", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 1), result.count);
-}
-
-test "Dispatcher dispatches multiple operations on same registry" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    // Register two Arrow capabilities
-    const cap1 = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
-    );
-    try cap_reg.register(cap1);
-
-    const cap2 = Capability.init(
-        gpa,
-        "subtract",
-        1,
-        "Arrow subtract",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
-    );
-    try cap_reg.register(cap2);
-
-    // Register corresponding Arrow functions
-    const fn1 = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(fn1);
-
-    const fn2 = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "subtract",
-        .arrow_fn_name = "subtract",
-    };
-    try arrow_reg.register(fn2);
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input1 = [2]f64{ 10.0, 20.0 };
-    var result1 = dispatcher.dispatch(gpa, "add", &.{&input1}) catch |err| return err;
-    defer result1.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 2), result1.count);
-
-    const input2 = [2]f64{ 5.0, 15.0 };
-    var result2 = dispatcher.dispatch(gpa, "subtract", &.{&input2}) catch |err| return err;
-    defer result2.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 2), result2.count);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// S7: Dispatch Provenance Tests
-// ═══════════════════════════════════════════════════════════════════
-
-const provenance_mod = @import("provenance");
-const ProvenanceRecord = provenance_mod.ProvenanceRecord;
-const ProvenanceBuffer = provenance_mod.ProvenanceBuffer;
-const BackendPolicy = backend_policy_mod.BackendPolicy;
-const ProvenanceCapture = provenance_mod.capture;
-
-// ─── ProvenanceRecord Tests (Task 1) ────────────────────────────────
-
-test "ProvenanceRecord initializes with all fields" {
-    const gpa = std.testing.allocator;
-
-    const lengths = try gpa.alloc(usize, 2);
-    defer gpa.free(lengths);
-    lengths[0] = 3;
-    lengths[1] = 3;
-
-    const record = ProvenanceRecord{
-        .operation_name = "add",
-        .backend_used = .arrow,
-        .input_count = 2,
-        .input_lengths = lengths,
-        .output_count = 3,
-        .timestamp_ns = 1234567890,
-        .success = true,
-        .error_message = null,
-    };
-
-    try expectEqualStrings("add", record.operation_name);
-    try expectEqual(BackendPolicy.arrow, record.backend_used);
-    try expectEqual(@as(usize, 2), record.input_count);
-    try expectEqual(@as(usize, 3), record.output_count);
-    try expect(record.success);
-    try expect(record.error_message == null);
-    try expectEqual(@as(usize, 3), record.input_lengths[0]);
-    try expectEqual(@as(usize, 3), record.input_lengths[1]);
-}
-
-test "ProvenanceRecord.deinit frees input_lengths" {
-    const gpa = std.testing.allocator;
-
-    var lengths = try gpa.alloc(usize, 3);
-    lengths[0] = 5;
-    lengths[1] = 5;
-    lengths[2] = 5;
-
-    var record = ProvenanceRecord{
-        .operation_name = "mean",
-        .backend_used = .gsl,
-        .input_count = 1,
-        .input_lengths = lengths,
-        .output_count = 1,
-        .timestamp_ns = 0,
-        .success = true,
-        .error_message = null,
-    };
-
-    try expectEqual(@as(usize, 3), record.input_lengths.len);
-
-    record.deinit(gpa);
-
-    // After deinit, input_lengths should be empty
-    try expectEqual(@as(usize, 0), record.input_lengths.len);
-}
-
-test "ProvenanceRecord.deinit frees error_message" {
-    const gpa = std.testing.allocator;
-
-    const msg = try gpa.dupe(u8, "backend unavailable");
-
-    var record = ProvenanceRecord{
-        .operation_name = "add",
-        .backend_used = .arrow,
-        .input_count = 1,
-        .input_lengths = &.{},
-        .output_count = 0,
-        .timestamp_ns = 0,
-        .success = false,
-        .error_message = msg,
-    };
-
-    try expect(record.error_message != null);
-
-    record.deinit(gpa);
-
-    try expect(record.error_message == null);
-}
-
-// ─── ProvenanceBuffer Tests (Task 2) ────────────────────────────────
-
-test "ProvenanceBuffer.append and get" {
-    const gpa = std.testing.allocator;
-    var buf = ProvenanceBuffer.init(gpa, 10);
-    defer buf.deinit();
-
-    const lengths = try gpa.alloc(usize, 1);
-    lengths[0] = 3;
-
-    const record = ProvenanceRecord{
-        .operation_name = "add",
-        .backend_used = .arrow,
-        .input_count = 1,
-        .input_lengths = lengths,
-        .output_count = 3,
-        .timestamp_ns = 100,
-        .success = true,
-        .error_message = null,
-    };
-
-    try buf.append(record);
-
-    try expectEqual(@as(usize, 1), buf.count());
-    const found = buf.get(0) orelse unreachable;
-    try expectEqualStrings("add", found.operation_name);
-}
-
-test "ProvenanceBuffer maintains bounded size" {
-    const gpa = std.testing.allocator;
-    var buf = ProvenanceBuffer.init(gpa, 3);
-    defer buf.deinit();
-
-    var i: usize = 0;
-    while (i < 5) : (i += 1) {
-        const lengths = try gpa.alloc(usize, 1);
-        lengths[0] = 1;
-
-        const record = ProvenanceRecord{
-            .operation_name = "op",
-            .backend_used = .arrow,
-            .input_count = 1,
-            .input_lengths = lengths,
-            .output_count = 1,
-            .timestamp_ns = i * 100,
-            .success = true,
-            .error_message = null,
-        };
-
-        try buf.append(record);
-    }
-
-    try expectEqual(@as(usize, 3), buf.count());
-    // After appending 5 records with max_size=3, the buffer should have
-    // the last 3 records (from iterations i=2,3,4) at indices 0,1,2.
-    try expect(buf.get(0) != null); // oldest remaining (i=2)
-    try expect(buf.get(1) != null); // middle (i=3)
-    try expect(buf.get(2) != null); // newest (i=4)
-    try expect(buf.get(3) == null); // beyond buffer
-}
-
-test "ProvenanceBuffer.get returns null for out-of-bounds index" {
-    const gpa = std.testing.allocator;
-    var buf = ProvenanceBuffer.init(gpa, 10);
-    defer buf.deinit();
-
-    try expect(buf.get(0) == null);
-}
-
-test "ProvenanceBuffer.empty count" {
-    const gpa = std.testing.allocator;
-    var buf = ProvenanceBuffer.init(gpa, 10);
-    defer buf.deinit();
-
-    try expectEqual(@as(usize, 0), buf.count());
-}
-
-// ─── ProvenanceCapture Tests (Task 3) ───────────────────────────────
-
-test "ProvenanceCapture creates record from dispatch context" {
-    const gpa = std.testing.allocator;
-
-    const input1 = [3]f64{ 1.0, 2.0, 3.0 };
-    const input2 = [3]f64{ 4.0, 5.0, 6.0 };
-
-    var record = ProvenanceCapture(
-        gpa,
-        "add",
-        .arrow,
-        &.{ &input1, &input2 },
-        3,
-        true,
-        null,
-    ) catch |err| return err;
-    defer record.deinit(gpa);
-
-    try expectEqualStrings("add", record.operation_name);
-    try expectEqual(BackendPolicy.arrow, record.backend_used);
-    try expectEqual(@as(usize, 2), record.input_count);
-    try expectEqual(@as(usize, 3), record.input_lengths[0]);
-    try expectEqual(@as(usize, 3), record.input_lengths[1]);
-    try expectEqual(@as(usize, 3), record.output_count);
-    try expect(record.success);
-    try expect(record.timestamp_ns > 0);
-}
-
-test "ProvenanceCapture records error context" {
-    const gpa = std.testing.allocator;
-
-    // Use a literal string — capture() will duplicate it internally,
-    // so record.deinit(gpa) frees the owned copy without leaking.
-    var record = ProvenanceCapture(
-        gpa,
-        "add",
-        .arrow,
-        &.{},
-        0,
-        false,
-        "backend unavailable",
-    ) catch |err| return err;
-    defer record.deinit(gpa);
-
-    try expect(!record.success);
-    try expect(record.error_message != null);
-    try expectEqualStrings("backend unavailable", record.error_message.?);
-}
-
-test "ProvenanceCapture zero inputs" {
-    const gpa = std.testing.allocator;
-
-    var record = ProvenanceCapture(
-        gpa,
-        "constant",
-        .auto,
-        &.{},
-        1,
-        true,
-        null,
-    ) catch |err| return err;
-    defer record.deinit(gpa);
-
-    try expectEqualStrings("constant", record.operation_name);
-    try expectEqual(@as(usize, 0), record.input_count);
-    try expectEqual(@as(usize, 0), record.input_lengths.len);
-}
-
-// ─── Dispatcher Provenance Integration Tests (Task 4) ───────────────
+// ─── Dispatcher Provenance Integration ────────────────────────────────
 
 test "Dispatcher dispatch records provenance on success" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .arrow);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    // Register capability
-    const cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
+        "add", 1, "Add",
         &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
         TypeDescriptor{ .category = .vector, .element_type = .f64 },
         .arrow,
     );
-    // Ownership transfers to registry on register.
-    try cap_reg.register(cap);
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 1);
 
-    // Register Arrow function
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
+    var prov_buf: [MaxProvenanceEntries]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
+
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
+    var result_buf: [64]f64 = undefined;
+    _ = dispatcher.dispatch("add", &.{&input}, &result_buf) catch |err| return err;
 
-    try expectEqual(@as(usize, 1), provenance.count());
-    const record = provenance.get(0) orelse unreachable;
-    try expectEqualStrings("add", record.operation_name);
-    try expectEqual(BackendPolicy.arrow, record.backend_used);
-    try expect(record.success);
-    try expectEqual(@as(usize, 3), record.output_count);
+    try std.testing.expectEqual(@as(usize, 1), prov.count());
+    const record = prov.get(0) orelse unreachable;
+    try std.testing.expectEqualStrings("add", record.operation_name);
+    try std.testing.expectEqual(BackendPolicy.arrow, record.backend_used);
+    try std.testing.expect(record.success);
+    try std.testing.expectEqual(@as(usize, 3), record.output_count);
 }
 
 test "Dispatcher dispatch records provenance on failure (unknown op)" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
+    var caps: [1]Capability = undefined;
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 0);
 
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
+    var prov_buf: [MaxProvenanceEntries]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .arrow);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
 
     const input = [3]f64{ 1.0, 2.0, 3.0 };
-    _ = dispatcher.dispatch(gpa, "nonexistent", &.{&input}) catch {};
+    var result_buf: [64]f64 = undefined;
+    _ = dispatcher.dispatch("nonexistent", &.{&input}, &result_buf) catch {};
 
-    try expectEqual(@as(usize, 1), provenance.count());
-    const record = provenance.get(0) orelse unreachable;
-    try expectEqualStrings("nonexistent", record.operation_name);
-    try expect(!record.success);
-    try expectEqual(@as(usize, 0), record.output_count);
+    try std.testing.expectEqual(@as(usize, 1), prov.count());
+    const record = prov.get(0) orelse unreachable;
+    try std.testing.expectEqualStrings("nonexistent", record.operation_name);
+    try std.testing.expect(!record.success);
 }
 
-// ─── Provenance Query Tests (Task 5) ────────────────────────────────
+test "Dispatcher dispatch records provenance on validation failure" {
+    var caps: [1]Capability = undefined;
+    caps[0] = Capability.init(
+        "add", 1, "Add",
+        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
+        TypeDescriptor{ .category = .vector, .element_type = .f64 },
+        .arrow,
+    );
+    var cap_reg: CapabilityRegistry = undefined;
+    CapabilityRegistry.init(&cap_reg, &caps, 1);
 
-test "ProvenanceBuffer.findByOperation finds most recent record" {
-    var gpa = std.testing.allocator;
-    var buf = ProvenanceBuffer.init(gpa, 100);
-    defer buf.deinit();
+    var sel: backend_policy_mod.BackendSelector = undefined;
+    backend_policy_mod.BackendSelector.init(&sel, .auto);
 
-    const l1 = try gpa.alloc(usize, 1);
-    l1[0] = 1;
+    var prov_buf: [MaxProvenanceEntries]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    const lengths_buf: [MaxProvenanceInputLengths]usize = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
-    const r1 = ProvenanceRecord{
-        .operation_name = "add",
-        .backend_used = .arrow,
-        .input_count = 1,
-        .input_lengths = l1,
-        .output_count = 1,
-        .timestamp_ns = 100,
-        .success = true,
-        .error_message = null,
-    };
-    try buf.append(r1);
+    var scratch: [64]f64 = undefined;
+    const dispatcher = Dispatcher.init(
+        &cap_reg, &sel, &prov, &scratch, lengths_buf,
+    );
 
-    const l2 = try gpa.alloc(usize, 1);
-    l2[0] = 2;
+    const input = [_]f64{ 1.0, std.math.nan(f64), 3.0 };
+    var result_buf: [64]f64 = undefined;
+    _ = dispatcher.dispatch("add", &.{&input}, &result_buf) catch {};
 
-    const r2 = ProvenanceRecord{
-        .operation_name = "mean",
-        .backend_used = .gsl,
-        .input_count = 1,
-        .input_lengths = l2,
-        .output_count = 1,
-        .timestamp_ns = 200,
-        .success = true,
-        .error_message = null,
-    };
-    try buf.append(r2);
-
-    const l3 = try gpa.alloc(usize, 1);
-    l3[0] = 3;
-
-    const r3 = ProvenanceRecord{
-        .operation_name = "add",
-        .backend_used = .gsl,
-        .input_count = 1,
-        .input_lengths = l3,
-        .output_count = 1,
-        .timestamp_ns = 300,
-        .success = false,
-        .error_message = null,
-    };
-    try buf.append(r3);
-
-    const found = buf.findByOperation("add") orelse unreachable;
-    try expectEqual(@as(u64, 300), found.timestamp_ns);
-    try expect(!found.success);
+    try std.testing.expectEqual(@as(usize, 1), prov.count());
+    const record = prov.get(0) orelse unreachable;
+    try std.testing.expect(!record.success);
 }
 
 test "ProvenanceBuffer.countByOperation counts all matching records" {
-    var gpa = std.testing.allocator;
-    var buf = ProvenanceBuffer.init(gpa, 100);
-    defer buf.deinit();
+    var prov_buf: [MaxProvenanceEntries]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
     inline for ([_]usize{ 1, 2, 3 }) |val| {
-        const lengths = try gpa.alloc(usize, 1);
-        lengths[0] = val;
-
+        var len_copy: [MaxProvenanceInputLengths]usize = undefined;
+        len_copy[0] = val;
         const record = ProvenanceRecord{
             .operation_name = "add",
             .backend_used = .arrow,
             .input_count = 1,
-            .input_lengths = lengths,
+            .input_lengths = len_copy,
+            .input_lengths_len = 1,
             .output_count = 1,
             .timestamp_ns = 0,
             .success = true,
             .error_message = null,
         };
-        try buf.append(record);
+        try prov.append(record);
     }
 
-    try expectEqual(@as(usize, 3), buf.countByOperation("add"));
-    try expectEqual(@as(usize, 0), buf.countByOperation("mean"));
+    try std.testing.expectEqual(@as(usize, 3), prov.countByOperation("add"));
+    try std.testing.expectEqual(@as(usize, 0), prov.countByOperation("mean"));
 }
 
 test "ProvenanceBuffer.findByOperation returns null for missing op" {
-    var gpa = std.testing.allocator;
-    var buf = ProvenanceBuffer.init(gpa, 100);
-    defer buf.deinit();
-
-    const lengths = try gpa.alloc(usize, 1);
-    lengths[0] = 1;
+    var prov_buf: [MaxProvenanceEntries]ProvenanceRecord = undefined;
+    var prov: ProvenanceBuffer = undefined;
+    ProvenanceBuffer.init(&prov, &prov_buf, MaxProvenanceEntries);
 
     const record = ProvenanceRecord{
         .operation_name = "add",
         .backend_used = .arrow,
         .input_count = 1,
-        .input_lengths = lengths,
+        .input_lengths = undefined,
+        .input_lengths_len = 0,
         .output_count = 1,
-        .timestamp_ns = 100,
+        .timestamp_ns = 0,
         .success = true,
         .error_message = null,
     };
-    try buf.append(record);
+    try prov.append(record);
 
-    try expect(buf.findByOperation("mean") == null);
-}
-
-// ─── End-to-End Provenance Test (Task 6) ───────────────────────────
-
-test "End-to-end provenance tracks mixed operations and backends" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-
-    var provenance = ProvenanceBuffer.init(gpa, 100);
-    defer provenance.deinit();
-
-    // Register Arrow capability
-    const arrow_cap = Capability.init(
-        gpa,
-        "add",
-        1,
-        "Arrow add",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .vector, .element_type = .f64 },
-        .arrow,
-    );
-    try cap_reg.register(arrow_cap);
-
-    // Register Arrow function
-    const arrow_fn = arrow_mod.ArrowFunctionRegistry.ArrowComputeFunction{
-        .name = "add",
-        .arrow_fn_name = "add",
-    };
-    try arrow_reg.register(arrow_fn);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    // Dispatch add (success)
-    const input1 = [3]f64{ 1.0, 2.0, 3.0 };
-    var result = dispatcher.dispatch(gpa, "add", &.{&input1}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    // Dispatch unknown (failure)
-    _ = dispatcher.dispatch(gpa, "unknown", &.{&input1}) catch {};
-
-    // Dispatch add again
-    var result2 = dispatcher.dispatch(gpa, "add", &.{&input1}) catch |err| return err;
-    defer result2.deinit(gpa);
-
-    try expectEqual(@as(usize, 3), provenance.count());
-
-    // Verify Arrow dispatch record
-    const arrow_record = provenance.findByOperation("add") orelse unreachable;
-    try expectEqual(BackendPolicy.arrow, arrow_record.backend_used);
-    try expect(arrow_record.success);
-
-    // Verify failure record
-    const fail_record = provenance.findByOperation("unknown") orelse unreachable;
-    try expect(!fail_record.success);
-
-    // Verify count
-    try expectEqual(@as(usize, 2), provenance.countByOperation("add"));
-}
-
-
-// ─── GSL FFI Connection Tests (Task 5) ───────────────────────────────────
-// These test the Zig→GSL FFI bridge directly — calling gsl_bindings functions
-// without any dispatch/registry layer. If these fail, the FFI is broken.
-
-test "GSL FFI bridge: mean([1,2,3,4,5]) = 3.0" {
-    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = @import("gsl_bindings").mean(&data);
-    try std.testing.expectApproxEqAbs(3.0, result, 1e-10);
-}
-
-test "GSL FFI bridge: variance([1,2,3,4,5]) = 2.5" {
-    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = @import("gsl_bindings").variance(&data);
-    try std.testing.expectApproxEqAbs(2.5, result, 1e-10);
-}
-
-test "GSL FFI bridge: sd([1,2,3,4,5]) ≈ 1.58113883" {
-    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = @import("gsl_bindings").sd(&data);
-    try std.testing.expectApproxEqAbs(1.58113883, result, 1e-6);
-}
-
-test "GSL FFI bridge: covariance([1,2,3],[2,4,6]) = 2.0" {
-    const d1 = [_]f64{ 1.0, 2.0, 3.0 };
-    const d2 = [_]f64{ 2.0, 4.0, 6.0 };
-    const result = @import("gsl_bindings").covariance(&d1, &d2);
-    try std.testing.expectApproxEqAbs(2.0, result, 1e-10);
-}
-
-test "GSL FFI bridge: correlation([1,2,3],[2,4,6]) = 1.0" {
-    const d1 = [_]f64{ 1.0, 2.0, 3.0 };
-    const d2 = [_]f64{ 2.0, 4.0, 6.0 };
-    const result = @import("gsl_bindings").correlation(&d1, &d2);
-    try std.testing.expectApproxEqAbs(1.0, result, 1e-10);
-}
-
-test "GSL FFI bridge: median([1,2,3,4,5]) = 3.0" {
-    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = @import("gsl_bindings").median(&data);
-    try std.testing.expectApproxEqAbs(3.0, result, 1e-10);
-}
-
-test "GSL FFI bridge: quantile(sorted, 0.25) = 2.0" {
-    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = @import("gsl_bindings").quantile(&data, 0.25);
-    try std.testing.expectApproxEqAbs(2.0, result, 1e-10);
-}
-
-test "GSL FFI bridge: quantile(sorted, 0.75) = 4.0" {
-    const data = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    const result = @import("gsl_bindings").quantile(&data, 0.75);
-    try std.testing.expectApproxEqAbs(4.0, result, 1e-10);
-}
-
-test "GSL FFI bridge: mean([10,20,30]) = 20.0" {
-    const data = [_]f64{ 10.0, 20.0, 30.0 };
-    const result = @import("gsl_bindings").mean(&data);
-    try std.testing.expectApproxEqAbs(20.0, result, 1e-10);
-}
-
-test "GSL FFI bridge: single element mean([42.0]) = 42.0" {
-    const data = [_]f64{ 42.0 };
-    const result = @import("gsl_bindings").mean(&data);
-    try std.testing.expectApproxEqAbs(42.0, result, 1e-10);
-}
-
-// ─── GSL Golden-Value Dispatch Tests (Task 6) ────────────────────────────
-// These verify GSL output against known correct values through the dispatch layer.
-
-test "GSL dispatch mean returns correct value" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    // Register GSL mean capability
-    const cap = Capability.init(
-        gpa, "mean", 1, "GSL mean",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "mean",
-        .gsl_fn_name = "gsl_stats_mean",
-        .gsl_header = "mean",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "mean", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try expectEqual(@as(usize, 1), result.count);
-    try std.testing.expectApproxEqAbs(3.0, result.data[0], 1e-10);
-}
-
-test "GSL dispatch variance returns correct value" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "variance", 1, "GSL variance",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "variance",
-        .gsl_fn_name = "gsl_stats_variance",
-        .gsl_header = "variance",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "variance", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectApproxEqAbs(2.5, result.data[0], 1e-10);
-}
-
-test "GSL dispatch sd returns correct value" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "std_dev", 1, "GSL sd",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "std_dev",
-        .gsl_fn_name = "gsl_stats_sd",
-        .gsl_header = "sd",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "std_dev", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectApproxEqAbs(1.58113883, result.data[0], 1e-6);
-}
-
-test "GSL dispatch covariance returns correct value" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "covariance", 1, "GSL covariance",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "covariance",
-        .gsl_fn_name = "gsl_stats_covariance",
-        .gsl_header = "covariance",
-        .min_inputs = 2,
-        .max_inputs = 2,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const d1 = [_]f64{ 1.0, 2.0, 3.0 };
-    const d2 = [_]f64{ 2.0, 4.0, 6.0 };
-    var result = dispatcher.dispatch(gpa, "covariance", &.{&d1, &d2}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectApproxEqAbs(2.0, result.data[0], 1e-10);
-}
-
-test "GSL dispatch correlation returns correct value" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "correlation", 1, "GSL correlation",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "correlation",
-        .gsl_fn_name = "gsl_stats_correlation",
-        .gsl_header = "correlation",
-        .min_inputs = 2,
-        .max_inputs = 2,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const d1 = [_]f64{ 1.0, 2.0, 3.0 };
-    const d2 = [_]f64{ 2.0, 4.0, 6.0 };
-    var result = dispatcher.dispatch(gpa, "correlation", &.{&d1, &d2}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectApproxEqAbs(1.0, result.data[0], 1e-10);
-}
-
-test "GSL dispatch median returns correct value" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "median", 1, "GSL median",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "median",
-        .gsl_fn_name = "gsl_stats_median_from_sorted_data",
-        .gsl_header = "median",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "median", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    try std.testing.expectApproxEqAbs(3.0, result.data[0], 1e-10);
-}
-
-test "GSL dispatch quantile returns correct value" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "quantile", 1, "GSL quantile",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "quantile",
-        .gsl_fn_name = "gsl_stats_quantile_from_sorted_data",
-        .gsl_header = "quantile",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input = [_]f64{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    var result = dispatcher.dispatch(gpa, "quantile", &.{&input}) catch |err| return err;
-    defer result.deinit(gpa);
-
-    // quantile called with default p=0.5 (median)
-    try std.testing.expectApproxEqAbs(3.0, result.data[0], 1e-10);
-}
-
-// ─── GSL Invalid-Input Tests (Task 8) ────────────────────────────────────
-// These verify that dispatch rejects invalid inputs through GSL validation.
-
-test "GSL dispatch rejects empty input" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "mean", 1, "GSL mean",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "mean",
-        .gsl_fn_name = "gsl_stats_mean",
-        .gsl_header = "mean",
-        .min_inputs = 1,
-        .max_inputs = 1,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const empty: []const f64 = &.{};
-    // Dispatch should fail with InvalidOperationInput for empty input
-    if (dispatcher.dispatch(gpa, "mean", &.{empty})) |_| {
-        // Unexpected success - test fails (no need to deinit since we're failing)
-        std.testing.expect(false) catch {};
-    } else |e| {
-        // Expected error - check it's InvalidOperationInput
-        if (std.mem.eql(u8, @errorName(e), "InvalidOperationInput")) {
-            // Test passes
-        } else {
-            std.testing.expect(false) catch {};
-        }
-    }
-}
-
-test "GSL dispatch rejects mismatched input lengths" {
-    const gpa = std.testing.allocator;
-    var cap_reg = CapabilityRegistry.init(gpa);
-    defer cap_reg.deinit();
-    var arrow_reg = arrow_mod.ArrowFunctionRegistry.init(gpa);
-    defer arrow_reg.deinit();
-    var gsl_reg = gsl_mod.GSLFunctionRegistry.init(gpa);
-    defer gsl_reg.deinit();
-    var selector = backend_policy_mod.BackendSelector.init(gpa, .auto);
-    defer selector.deinit();
-    var provenance = ProvenanceBuffer.init(gpa, 10);
-    defer provenance.deinit();
-
-    const cap = Capability.init(
-        gpa, "covariance", 1, "GSL covariance",
-        &.{TypeDescriptor{ .category = .vector, .element_type = .f64 }},
-        TypeDescriptor{ .category = .scalar, .element_type = .f64 },
-        .gsl,
-    );
-    try cap_reg.register(cap);
-
-    const entry = gsl_mod.GSLFunctionRegistry.GSLFunctionEntry{
-        .name = "covariance",
-        .gsl_fn_name = "gsl_stats_covariance",
-        .gsl_header = "covariance",
-        .min_inputs = 2,
-        .max_inputs = 2,
-    };
-    try gsl_reg.register(entry);
-
-    const dispatcher = Dispatcher.init(&cap_reg, &arrow_reg, &gsl_reg, &selector, &provenance);
-
-    const input1 = [_]f64{ 1.0, 2.0, 3.0 };
-    const input2 = [_]f64{ 1.0, 2.0 }; // mismatched length
-    // Dispatch should fail with InvalidOperationInput for mismatched lengths
-    if (dispatcher.dispatch(gpa, "covariance", &.{&input1, &input2})) |_| {
-        // Unexpected success - test fails (no need to deinit since we're failing)
-        std.testing.expect(false) catch {};
-    } else |e| {
-        // Expected error - check it's InvalidOperationInput
-        if (std.mem.eql(u8, @errorName(e), "InvalidOperationInput")) {
-            // Test passes
-        } else {
-            std.testing.expect(false) catch {};
-        }
-    }
+    try std.testing.expect(prov.findByOperation("mean") == null);
+    try std.testing.expect(prov.findByOperation("add") != null);
 }

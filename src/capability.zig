@@ -1,4 +1,5 @@
 // Capability registry types for V1.2-S1.
+// Heap-free: no allocator, no allocation, no deinit.
 
 const std = @import("std");
 
@@ -33,7 +34,6 @@ pub const Capability = struct {
     backend_selector: BackendSelector,
 
     pub fn init(
-        allocator: std.mem.Allocator,
         name: []const u8,
         version: u32,
         description: []const u8,
@@ -45,13 +45,11 @@ pub const Capability = struct {
             .name = name,
             .version = version,
             .description = description,
-            .input_types = allocator.dupe(TypeDescriptor, input_types) catch @panic("oom"),
+            .input_types = input_types,
             .output_type = output_type,
             .backend_selector = backend_selector,
         };
     }
 
-    pub fn deinit(self: *const Capability, allocator: std.mem.Allocator) void {
-        allocator.free(self.input_types);
-    }
+    // No deinit — nothing owned.
 };

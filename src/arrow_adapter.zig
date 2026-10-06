@@ -1,4 +1,4 @@
-// ArrowComputeMap — comptime mapping from Yamori capability names to Arrow Compute function names.
+// ArrowAdapter — comptime Arrow function map + validation helpers. Heap-free.
 
 const std = @import("std");
 
@@ -43,88 +43,6 @@ pub const ArrowComputeMap = struct {
             }
         }
         return null;
-    }
-};
-
-/// Registry that maps capability names to Arrow Compute function wrappers.
-pub const ArrowFunctionRegistry = struct {
-    allocator: std.mem.Allocator,
-    functions: std.StringHashMap(*ArrowComputeFunction),
-
-    /// Represents an Arrow Compute function entry.
-    pub const ArrowComputeFunction = struct {
-        name: []const u8,
-        /// The Arrow Compute function name string.
-        arrow_fn_name: []const u8,
-    };
-
-    pub fn init(gpa: std.mem.Allocator) ArrowFunctionRegistry {
-        return ArrowFunctionRegistry{
-            .allocator = gpa,
-            .functions = std.StringHashMap(*ArrowComputeFunction).init(gpa),
-        };
-    }
-
-    pub fn deinit(self: *ArrowFunctionRegistry) void {
-        var it = self.functions.iterator();
-        while (it.next()) |entry| {
-            const stored: *ArrowComputeFunction = entry.value_ptr.*;
-            // Free the key (duped_name from register).
-            self.allocator.free(entry.key_ptr.*);
-            // Free arrow_fn_name (separate heap allocation from register).
-            // Zero .name so destroy() doesn't double-free it.
-            const afn = stored.arrow_fn_name;
-            stored.arrow_fn_name = "";
-            stored.name = "";
-            self.allocator.free(afn);
-            self.allocator.destroy(stored);
-        }
-        self.functions.deinit();
-    }
-
-    /// Register an Arrow compute function. Returns ArrowError.ComputeFailed
-    /// if the name is already registered.
-    pub fn register(
-        self: *ArrowFunctionRegistry,
-        fn_entry: ArrowComputeFunction,
-    ) ArrowError!void {
-        const duped_name = self.allocator.dupe(u8, fn_entry.name) catch return ArrowError.ComputeFailed;
-        const duped_arrow = self.allocator.dupe(u8, fn_entry.arrow_fn_name) catch {
-            self.allocator.free(duped_name);
-            return ArrowError.ComputeFailed;
-        };
-
-        // Check for duplicate before allocating stored struct.
-        if (self.functions.contains(duped_name)) {
-            self.allocator.free(duped_name);
-            self.allocator.free(duped_arrow);
-            return ArrowError.ComputeFailed;
-        }
-
-        const stored = self.allocator.create(ArrowComputeFunction) catch {
-            self.allocator.free(duped_name);
-            self.allocator.free(duped_arrow);
-            return ArrowError.ComputeFailed;
-        };
-        stored.name = duped_name;
-        stored.arrow_fn_name = duped_arrow;
-        self.functions.put(duped_name, stored) catch {
-            self.allocator.free(duped_name);
-            self.allocator.free(duped_arrow);
-            self.allocator.destroy(stored);
-            return ArrowError.ComputeFailed;
-        };
-    }
-
-    /// Lookup a registered Arrow compute function by capability name.
-    /// Returns null if not found.
-    pub fn get(
-        self: *const ArrowFunctionRegistry,
-        name: []const u8,
-    ) ?*const ArrowComputeFunction {
-        const slot = self.functions.getPtr(name) orelse return null;
-        // slot is ?*(*ArrowComputeFunction); dereference to get ?*ArrowComputeFunction, then cast.
-        return @ptrCast(@alignCast(slot.*));
     }
 };
 

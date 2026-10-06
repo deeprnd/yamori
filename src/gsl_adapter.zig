@@ -1,4 +1,4 @@
-// GSLFunctionMap — comptime mapping from Yamori capability names to GSL function names.
+// GSLAdapter — comptime GSL function map + validation helpers. Heap-free.
 
 const std = @import("std");
 
@@ -47,62 +47,6 @@ pub const GSLFunctionMap = struct {
     }
 };
 
-/// Registry that maps capability names to GSL function metadata.
-pub const GSLFunctionRegistry = struct {
-    allocator: std.mem.Allocator,
-    functions: std.StringHashMap(GSLFunctionEntry),
-
-    pub const GSLFunctionEntry = struct {
-        name: []const u8,
-        gsl_fn_name: []const u8,
-        gsl_header: []const u8,
-        min_inputs: usize,
-        max_inputs: usize,
-    };
-
-    pub fn init(gpa: std.mem.Allocator) GSLFunctionRegistry {
-        return GSLFunctionRegistry{
-            .allocator = gpa,
-            .functions = std.StringHashMap(GSLFunctionEntry).init(gpa),
-        };
-    }
-
-    pub fn deinit(self: *GSLFunctionRegistry) void {
-        var it = self.functions.iterator();
-        while (it.next()) |kv| {
-            self.allocator.free(kv.key_ptr.*);
-            self.allocator.free(kv.value_ptr.gsl_fn_name);
-            self.allocator.free(kv.value_ptr.gsl_header);
-        }
-        self.functions.deinit();
-    }
-
-    pub fn register(self: *GSLFunctionRegistry, entry: GSLFunctionEntry) !void {
-        const name_dupe = (self.allocator.dupe(u8, entry.name)) catch return GSLAdapterError.MemoryAllocationFailed;
-        const fn_name_dupe = (self.allocator.dupe(u8, entry.gsl_fn_name)) catch {
-            self.allocator.free(name_dupe);
-            return GSLAdapterError.MemoryAllocationFailed;
-        };
-        const header_dupe = (self.allocator.dupe(u8, entry.gsl_header)) catch {
-            self.allocator.free(name_dupe);
-            self.allocator.free(fn_name_dupe);
-            return GSLAdapterError.MemoryAllocationFailed;
-        };
-        const val = GSLFunctionEntry{
-            .name = name_dupe,
-            .gsl_fn_name = fn_name_dupe,
-            .gsl_header = header_dupe,
-            .min_inputs = entry.min_inputs,
-            .max_inputs = entry.max_inputs,
-        };
-        try self.functions.put(name_dupe, val);
-    }
-
-    pub fn get(self: *const GSLFunctionRegistry, name: []const u8) ?*const GSLFunctionEntry {
-        return self.functions.getPtr(name);
-    }
-};
-
 /// Input validation helpers for GSL compute dispatch.
 pub const GSLAdapter = struct {
     /// Validate that all input slices are non-empty f64 vectors of matching lengths.
@@ -136,23 +80,10 @@ pub const GSLAdapter = struct {
     /// Register all GSL statistical functions behind the capability registry.
     /// Each capability is registered with backend_selector = .gsl.
     pub fn register_gsl_backends(
-        allocator: std.mem.Allocator,
         cap_reg: *capability_mod.CapabilityRegistry,
-        gsl_reg: *GSLFunctionRegistry,
     ) !void {
         inline for (GSLFunctionMap.all) |entry| {
-            const fn_entry = GSLFunctionRegistry.GSLFunctionEntry{
-                .name = entry.capability_name,
-                .gsl_fn_name = entry.gsl_fn,
-                .gsl_header = entry.gsl_header,
-                .min_inputs = 1,
-                .max_inputs = 2,
-            };
-            try gsl_reg.register(fn_entry);
-
-            // Register the capability with gsl backend selector
-            const cap = try capability_mod.Capability.init(
-                allocator,
+            const cap = capability_mod.Capability.init(
                 entry.capability_name,
                 1,
                 "GSL " ++ entry.capability_name,
@@ -160,7 +91,7 @@ pub const GSLAdapter = struct {
                 capability_mod.TypeDescriptor{ .category = .scalar, .element_type = .f64 },
                 .gsl,
             );
-            try cap_reg.register(cap);
+            try cap_reg.register(&cap);
         }
     }
 };

@@ -1,10 +1,10 @@
 # ── Security: Gitleaks ─────────────────────────────────────────────────────
 
 security-gitleaks-check-yamori:
-	gitleaks detect --no-git --verbose --source {{ justfile_dir }}/src \
-	  --config {{ justfile_dir }}/contrib/security/gitleaks-yamori.toml
-	gitleaks detect --no-git --verbose --source {{ justfile_dir }}/tests \
-	  --config {{ justfile_dir }}/contrib/security/gitleaks-yamori.toml
+	gitleaks detect --no-git --verbose --source "$PWD/src" \
+	  --config "$PWD/contrib/security/gitleaks-yamori.toml"
+	gitleaks detect --no-git --verbose --source "$PWD/tests" \
+	  --config "$PWD/contrib/security/gitleaks-yamori.toml"
 
 security-gitleaks-check-all:
 	just security-gitleaks-check-yamori
