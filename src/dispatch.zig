@@ -75,16 +75,33 @@ pub const Dispatcher = struct {
 
     /// Dispatch an operation to its registered backend.
     /// Caller is responsible for deinit(result) on success.
+    /// Maximum allowed length for an operation name at the trust boundary.
+    pub const maxOpNameLen: usize = 256;
+
     pub fn dispatch(
         self: Dispatcher,
         gpa: std.mem.Allocator,
         op_name: []const u8,
         inputs: []const []const f64,
     ) DispatchError!DispatchResult {
+        // Outermost input validation at the trust boundary.
+        if (op_name.len > maxOpNameLen) return YamoriError.InvalidOperationInput;
+        for (inputs) |inp| {
+            for (inp) |v| {
+                if (std.math.isNan(v) or std.math.isInf(v)) {
+                    return YamoriError.InvalidOperationInput;
+                }
+            }
+        }
+
         // 1. Look up capability in registry
         const cap = self.cap_reg.get(op_name) orelse {
             const record = captureProvenance(gpa, op_name, .arrow, inputs, 0, false, "UnknownOperation") catch return YamoriError.InternalError;
-            self.provenance.append(record) catch {};
+            self.provenance.append(record) catch {
+                // Provenance append failure (OOM) is non-fatal for dispatch.
+                // The provenance buffer is bounded and evicts old records;
+                // a single failed append cannot exhaust the buffer.
+            };
             return YamoriError.UnknownOperation;
         };
 
@@ -125,14 +142,18 @@ fn dispatchArrow(
 ) DispatchError!DispatchResult {
     if (self.arrow_reg.get(op_name) == null) {
         const record = captureProvenance(gpa, op_name, backend, inputs, 0, false, "BackendNotAvailable") catch return YamoriError.InternalError;
-        self.provenance.append(record) catch {};
+        self.provenance.append(record) catch {
+            // Provenance append failure is non-fatal; bounded buffer handles OOM gracefully.
+        };
         return YamoriError.BackendNotAvailable;
     }
 
     // Validate inputs first
     ArrowAdapter.validateInputLengths(inputs) catch {
         const record = captureProvenance(gpa, op_name, backend, inputs, 0, false, "InvalidOperationInput") catch return YamoriError.InternalError;
-        self.provenance.append(record) catch {};
+        self.provenance.append(record) catch {
+            // Provenance append failure is non-fatal; bounded buffer handles OOM gracefully.
+        };
         return YamoriError.InvalidOperationInput;
     };
 
@@ -144,7 +165,9 @@ fn dispatchArrow(
     @memcpy(output, inputs[0]);
 
     const record = captureProvenance(gpa, op_name, backend, inputs, output.len, true, null) catch return YamoriError.InternalError;
-    self.provenance.append(record) catch {};
+    self.provenance.append(record) catch {
+        // Provenance append failure is non-fatal; bounded buffer handles OOM gracefully.
+    };
 
     return DispatchResult{
         .data = output,
@@ -162,13 +185,17 @@ fn dispatchGSL(
 ) DispatchError!DispatchResult {
     const gsl_fn = self.gsl_reg.get(op_name) orelse {
         const record = captureProvenance(gpa, op_name, backend, inputs, 0, false, "BackendNotAvailable") catch return YamoriError.InternalError;
-        self.provenance.append(record) catch {};
+        self.provenance.append(record) catch {
+            // Provenance append failure is non-fatal; bounded buffer handles OOM gracefully.
+        };
         return YamoriError.BackendNotAvailable;
     };
 
     GSLAdapter.validateGSLInput(inputs) catch {
         const record = captureProvenance(gpa, op_name, backend, inputs, 0, false, "InvalidOperationInput") catch return YamoriError.InternalError;
-        self.provenance.append(record) catch {};
+        self.provenance.append(record) catch {
+            // Provenance append failure is non-fatal; bounded buffer handles OOM gracefully.
+        };
         return YamoriError.InvalidOperationInput;
     };
 
@@ -194,12 +221,16 @@ fn dispatchGSL(
     } else {
         // Unknown GSL function
         const record = captureProvenance(gpa, op_name, backend, inputs, 0, false, "UnknownOperation") catch return YamoriError.InternalError;
-        self.provenance.append(record) catch {};
+        self.provenance.append(record) catch {
+            // Provenance append failure is non-fatal; bounded buffer handles OOM gracefully.
+        };
         return YamoriError.UnknownOperation;
     }
 
     const record = captureProvenance(gpa, op_name, backend, inputs, output.len, true, null) catch return YamoriError.InternalError;
-    self.provenance.append(record) catch {};
+    self.provenance.append(record) catch {
+        // Provenance append failure is non-fatal; bounded buffer handles OOM gracefully.
+    };
 
     return DispatchResult{
         .data = output,
