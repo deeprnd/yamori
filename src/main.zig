@@ -88,6 +88,16 @@ pub const formula = struct {
             return table.string_count;
         }
 
+        /// Look up the index of a string by content.
+        pub fn lookupByName(table: *const StringTable, slice: []const u8) ?usize {
+            var len: usize = 0;
+            while (len < table.string_count) : (len += 1) {
+                const existing = table.get(len) catch break;
+                if (std.mem.eql(u8, existing, slice)) return @as(usize, @truncate(len));
+            }
+            return null;
+        }
+
         fn get_offset(table: *StringTable, index: usize) usize {
             // Compute byte offset: sum of all previous lengths + their null terminators
             var offset: usize = 0;
@@ -2049,30 +2059,82 @@ test "arrow_adapter: ArrowArray extern struct has reasonable size" {
 
 // ─── V1.1.S5: runValuation() Graph Traversal ────────────────────────────
 
-/// ResultFrame: formula name → computed Arrow array, data slice, and buffers holder.
-/// The ArrowArray structs, their data buffers, and buffers_holder arrays are owned by the frame.
-pub const ResultFrame = struct {
-    results: std.StringHashMap(*arrowAdapter.ArrowArray),
-    result_data: std.StringHashMap([]f64),
-    buffers_holders: std.StringHashMap(?[]u64),
-    allocator: std.mem.Allocator,
+/// Fixed-size result entry stored in ResultFrame.
+pub const ResultEntry = struct {
+    name_idx: usize,        // string table index
+    arr: *arrowAdapter.ArrowArray,
+    data: []f64,
+    buffers_holder: ?[]u64,
+};
 
-    pub fn init(allocator: std.mem.Allocator) ResultFrame {
-        return ResultFrame{
-            .results = std.StringHashMap(*arrowAdapter.ArrowArray).init(allocator),
-            .result_data = std.StringHashMap([]f64).init(allocator),
-            .buffers_holders = std.StringHashMap(?[]u64).init(allocator),
-            .allocator = allocator,
+/// ResultFrame: formula name → computed Arrow array, data slice, and buffers holder.
+/// Fixed-size caller-owned arrays. No StringHashMap. No heap allocations.
+pub const ResultFrame = struct {
+    results: []ResultEntry,  // caller-owned fixed-size array
+    result_count: usize,
+
+    pub fn init(frame: *ResultFrame, results_buf: []ResultEntry) void {
+        frame.results = results_buf;
+        frame.result_count = 0;
+    }
+
+    /// Add a result entry. Returns false if frame is full.
+    pub fn put(frame: *ResultFrame, name_idx: usize, arr: *arrowAdapter.ArrowArray, data: []f64, buffers_holder: ?[]u64) bool {
+        if (frame.result_count >= frame.results.len) return false;
+        frame.results[frame.result_count] = ResultEntry{
+            .name_idx = name_idx,
+            .arr = arr,
+            .data = data,
+            .buffers_holder = buffers_holder,
         };
+        frame.result_count += 1;
+        return true;
+    }
+
+    /// Lookup a result by string table index. Returns null if not found.
+    pub fn get(frame: *const ResultFrame, name_idx: usize) ?*const ResultEntry {
+        var i: usize = 0;
+        while (i < frame.result_count) : (i += 1) {
+            if (frame.results[i].name_idx == name_idx) return &frame.results[i];
+        }
+        return null;
+    }
+
+    /// Lookup a result by name string. Returns null if not found.
+    pub fn getByName(frame: *const ResultFrame, name: []const u8, string_table: *const formula.StringTable) ?*const ResultEntry {
+        var i: usize = 0;
+        while (i < frame.result_count) : (i += 1) {
+            const entry_name = string_table.get(frame.results[i].name_idx) catch continue;
+            if (std.mem.eql(u8, entry_name, name)) return &frame.results[i];
+        }
+        return null;
+    }
+
+    pub fn count(frame: *const ResultFrame) usize {
+        return frame.result_count;
+    }
+};
+
+/// Heap-free source data lookup: caller-owned fixed-size array of source ArrowArrays.
+pub const SourceData = struct {
+    sources: []const *arrowAdapter.ArrowArray,
+    source_names: []const usize,  // parallel array of string table indices
+
+    /// Lookup a source by string table index. Returns null if not found.
+    pub fn get(source_data: *const SourceData, name_idx: usize) ?*const arrowAdapter.ArrowArray {
+        var i: usize = 0;
+        while (i < source_data.sources.len) : (i += 1) {
+            if (source_data.source_names[i] == name_idx) return source_data.sources[i];
+        }
+        return null;
     }
 };
 
 /// ValuationInput: registry + source leaf metric values (name → ArrowArray).
-/// The source arrays are owned by the caller; the frame stores pointers to them.
+/// Uses caller-owned fixed arrays instead of StringHashMap.
 pub const ValuationInput = struct {
     registry: *const formula.FormulaRegistry,
-    source_data: std.StringHashMap(*arrowAdapter.ArrowArray),
-    allocator: std.mem.Allocator,
+    source_data: *const SourceData,
 };
 
 /// ValuationError: all error classes S5 may surface.
@@ -2084,58 +2146,24 @@ pub const ValuationError = error{
     RegistryError,
     ResolveError,
     ArrowError,
-    AllocationFailed,
     NotFound,
 };
 
-/// Free a ResultFrame — frees all ArrowArray structs, data buffers, buffers_holder arrays,
-/// and StringHashMap keys. Keys are shared across maps so only freed once (from `results`).
-pub fn resultFrameFree(frame: *ResultFrame) void {
-    const alloc = frame.allocator;
-
-    // Free ArrowArray values and their keys in results map
-    var it = frame.results.iterator();
-    while (it.next()) |entry| {
-        alloc.destroy(entry.value_ptr.*);
-        alloc.free(entry.key_ptr.*); // only free keys once (shared across maps)
-    }
-    frame.results.deinit();
-
-    // Free data slices only (keys already freed above)
-    var dit = frame.result_data.iterator();
-    while (dit.next()) |entry| {
-        alloc.free(entry.value_ptr.*);
-    }
-    frame.result_data.deinit();
-
-    // Free buffers_holder arrays only (keys already freed above)
-    var bit = frame.buffers_holders.iterator();
-    while (bit.next()) |entry| {
-        if (entry.value_ptr.*) |bufs| {
-            alloc.free(bufs);
-        }
-    }
-    frame.buffers_holders.deinit();
+/// resultFrameFree is a no-op — ResultFrame uses fixed arrays with no heap ownership.
+pub fn resultFrameFree(_frame: *ResultFrame) void {
+    _ = _frame;
 }
 
 /// Main valuation runner: traverse graph in topological order, execute each
 /// formula via the Arrow adapter, collect results into ResultFrame.
-/// Fail-closed: any error frees all prior results and returns the error.
-/// Returns a heap-allocated *ResultFrame to avoid StringHashMap copy-on-return.
-///
-/// Ownership model: frame.results owns the ArrowArray pointers stored there.
-/// The resultFrameFree() function will destroy() those pointers. Caller-owned
-/// source arrays must NOT be stored directly — they must be copied if needed
-/// for multi-operand formulas.
-pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
-    const alloc = input.allocator;
-    const frame = alloc.create(ResultFrame) catch return ValuationError.AllocationFailed;
-    frame.* = ResultFrame.init(alloc);
-    errdefer {
-        resultFrameFree(frame);
-        alloc.destroy(frame);
-    }
-
+/// Fail-closed: any error returns the error without writing to frame.
+/// All ArrowArray structs and data buffers are allocated in scratch (FBA).
+pub fn runValuation(
+    input: ValuationInput,
+    frame: *ResultFrame,
+    scratch: *std.heap.FixedBufferAllocator,  // mutable for allocator()
+) ValuationError!void {
+    const alloc = scratch.allocator();
     // Step 1: resolve dependencies to get topological order (heap-free)
     var order_buf: [64]usize = undefined;
     var in_deg_buf: [64]usize = undefined;
@@ -2148,232 +2176,218 @@ pub fn runValuation(input: ValuationInput) ValuationError!*ResultFrame {
     );
     if (ordered_count == 0) return ValuationError.ResolveError;
 
-    // Allocate reusable buffers for operand collection
-    var operand_ptrs: std.ArrayListUnmanaged(*arrowAdapter.ArrowArray) = .empty;
-    var operand_owned: std.ArrayListUnmanaged(bool) = .empty;
-    var cleanup_done = false;
-    errdefer {
-        if (!cleanup_done) {
-            var j: usize = 0;
-            while (j < operand_ptrs.items.len) : (j += 1) {
-                if (operand_owned.items[j]) {
-                    alloc.destroy(operand_ptrs.items[j]);
-                }
-            }
-            operand_ptrs.deinit(alloc);
-            operand_owned.deinit(alloc);
-            cleanup_done = true;
-        }
-    }
+    const registry = input.registry;
+    const string_table = registry.string_table;
+    const src_data = input.source_data;
+
+    // Reusable operand buffers — fixed-size, no heap
+    var operand_ptrs: [formula.MaxSources]*arrowAdapter.ArrowArray = undefined;
+    var operand_data: [formula.MaxSources][]f64 = undefined;
 
     // Step 2: iterate in topological order
     var i: usize = 0;
     while (i < ordered_count) : (i += 1) {
         const formula_idx = order_buf[i];
-        const entry = input.registry.formulas[formula_idx] orelse return ValuationError.NotFound;
-        const name = input.registry.string_table.get(entry.name_idx) catch return ValuationError.RegistryError;
+        const entry = registry.formulas[formula_idx] orelse return ValuationError.NotFound;
+        const name_idx = entry.name_idx;
 
-        // Free owned ArrowArray copies from previous iteration, then clear lists
-        var oi: usize = 0;
-        while (oi < operand_ptrs.items.len) : (oi += 1) {
-            if (operand_owned.items[oi]) {
-                alloc.destroy(operand_ptrs.items[oi]);
-            }
-        }
-        operand_ptrs.clearRetainingCapacity();
-        operand_owned.clearRetainingCapacity();
-
-        // Gather operands from source_data or prior results.
-        // Sources are string table indices — look up the string name.
+        // Gather operands from source_data or prior results
+        var operand_count: usize = 0;
         var si: usize = 0;
         while (si < entry.source_count) : (si += 1) {
-            const src_name = input.registry.string_table.get(entry.sources[si]) catch return ValuationError.RegistryError;
+            const src_name_idx = entry.sources[si];
 
-            if (input.source_data.get(src_name)) |src_arr| {
-                // Source is a leaf metric — copy to owned array so frame can destroy() it
-                const owned = alloc.create(arrowAdapter.ArrowArray) catch return ValuationError.AllocationFailed;
-                owned.* = src_arr.*;
-                operand_ptrs.append(alloc, owned) catch return ValuationError.AllocationFailed;
-                operand_owned.append(alloc, true) catch return ValuationError.AllocationFailed;
-            } else if (frame.results.get(src_name)) |cached_arr| {
-                // Source is a previously computed formula result — use directly (frame owns it)
-                operand_ptrs.append(alloc, cached_arr) catch return ValuationError.AllocationFailed;
-                operand_owned.append(alloc, false) catch return ValuationError.AllocationFailed;
+            if (src_data.get(src_name_idx)) |src_arr| {
+                // Source is a leaf metric — copy into owned ArrowArray in FBA
+                const len = src_arr.*.length;
+                if (len <= 0 or len > std.math.maxInt(usize)) return ValuationError.TypeMismatch;
+
+                const copied_data = scratch.allocator().alloc(f64, @intCast(len)) catch return ValuationError.TypeMismatch;
+                const buf0: [*c]*const void = src_arr.*.buffers;
+                const src_data_ptr: [*]const f64 = @ptrFromInt(@intFromPtr(buf0[1]));
+                var d: usize = 0;
+                while (d < len) : (d += 1) {
+                    copied_data[d] = src_data_ptr[d];
+                }
+
+                const frame_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+                frame_arr.* = arrowAdapter.ArrowArray{
+                    .length = len,
+                    .null_count = 0,
+                    .offset = 0,
+                    .n_buffers = 1,
+                    .n_children = 0,
+                    .buffers = @ptrCast(&copied_data[0]),
+                    .children = null,
+                    .dictionary = null,
+                    .release = null,
+                    .private_data = null,
+                };
+
+                operand_ptrs[operand_count] = frame_arr;
+                operand_data[operand_count] = copied_data[0..len];
+                operand_count += 1;
+            } else if (frame.get(name_idx)) |cached| {
+                // Source is a previously computed result — use directly
+                operand_ptrs[operand_count] = cached.arr;
+                operand_data[operand_count] = cached.data;
+                operand_count += 1;
             } else {
                 return ValuationError.NotFound;
             }
         }
 
         // Execute the operation (2+ operands) or pass-through (1 operand)
-        if (operand_ptrs.items.len == 1) {
-            // Single source — pass through (identity operation).
-            const src_arr = operand_ptrs.items[0];
+        if (operand_count == 1) {
+            // Single source — pass through: copy data from source to new FBA allocation
+            const src_arr = operand_ptrs[0];
             const len = src_arr.*.length;
-            if (len <= 0) return ValuationError.TypeMismatch;
-            if (len > std.math.maxInt(usize)) return ValuationError.TypeMismatch;
+            if (len <= 0 or len > std.math.maxInt(usize)) return ValuationError.TypeMismatch;
 
-            // Allocate fresh ArrowArray and data buffer for frame ownership
-            const frame_arr = alloc.create(arrowAdapter.ArrowArray) catch return ValuationError.AllocationFailed;
-            const copied_data = alloc.alloc(f64, @intCast(len)) catch {
-                alloc.destroy(frame_arr);
-                return ValuationError.AllocationFailed;
-            };
-            const src_buf0: [*c]*const void = src_arr.*.buffers;
-            const src_data: [*]const f64 = @ptrFromInt(@intFromPtr(src_buf0[1]));
-            for (0..@intCast(len)) |j| {
-                copied_data[j] = src_data[j];
+            const copied_data = scratch.allocator().alloc(f64, @intCast(len)) catch return ValuationError.TypeMismatch;
+            const buf0: [*c]*const void = src_arr.*.buffers;
+            const src_data_ptr: [*]const f64 = @ptrFromInt(@intFromPtr(buf0[1]));
+            var d: usize = 0;
+            while (d < len) : (d += 1) {
+                copied_data[d] = src_data_ptr[d];
             }
 
-            // Properly initialize the ArrowArray struct (same pattern as executeOperation)
-            const buffers_holder = alloc.alloc(u64, 2) catch {
-                alloc.free(copied_data);
-                alloc.destroy(frame_arr);
-                return ValuationError.AllocationFailed;
-            };
-            buffers_holder[0] = 0;
-            buffers_holder[1] = @intFromPtr(copied_data.ptr);
-            const buf_ptr: [*c]*const void = @ptrCast(buffers_holder.ptr);
-
+            const frame_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
             frame_arr.* = arrowAdapter.ArrowArray{
                 .length = len,
                 .null_count = 0,
                 .offset = 0,
                 .n_buffers = 1,
                 .n_children = 0,
-                .buffers = buf_ptr,
+                .buffers = @ptrCast(&copied_data[0]),
                 .children = null,
                 .dictionary = null,
                 .release = null,
                 .private_data = null,
             };
 
-            const name_copy = alloc.dupe(u8, name) catch {
-                alloc.free(copied_data);
-                alloc.destroy(frame_arr);
-                return ValuationError.AllocationFailed;
-            };
-            (frame.results.put(name_copy, frame_arr)) catch {
-                alloc.free(copied_data);
-                alloc.free(name_copy);
-                return ValuationError.AllocationFailed;
-            };
-            (frame.result_data.put(name_copy, copied_data)) catch {
-                alloc.free(name_copy);
-                return ValuationError.AllocationFailed;
-            };
-            frame.buffers_holders.put(name_copy, buffers_holder) catch {};
+            // Allocate buffers_holder in FBA
+            const bh = scratch.allocator().create([2]u64) catch return ValuationError.TypeMismatch;
+            bh[0][0] = 0;
+            bh[0][1] = @intFromPtr(copied_data.ptr);
+
+            if (!frame.put(name_idx, frame_arr, copied_data[0..len], bh[0][0..2])) {
+                return ValuationError.TypeMismatch;
+            }
             continue;
         }
 
-        if (operand_ptrs.items.len < 2) continue;
+        if (operand_count < 2) continue;
 
         // Multi-operand: execute the operation
-        const c_operands: []const *arrowAdapter.ArrowArray = operand_ptrs.items;
-        const op_name = input.registry.string_table.get(entry.operation_idx) catch return ValuationError.RegistryError;
+        const op_name = string_table.get(entry.operation_idx) catch return ValuationError.RegistryError;
 
         const compute_result = arrowAdapter.executeOperation(
             op_name,
-            c_operands,
+            operand_ptrs[0..operand_count],
             alloc,
         ) catch |err| {
             switch (err) {
                 arrowAdapter.AdapterError.UndefinedOperation => return ValuationError.UndefinedOperation,
                 arrowAdapter.AdapterError.TypeMismatch => return ValuationError.TypeMismatch,
-                arrowAdapter.AdapterError.AllocationFailed => return ValuationError.AllocationFailed,
+                else => return ValuationError.TypeMismatch,
             }
         };
 
         // Store result in frame: move ownership of ArrowArray struct and data.
         const result_arr_ptr: *arrowAdapter.ArrowArray = @ptrCast(compute_result.output_array);
 
-        const name_copy = (alloc.dupe(u8, name)) catch {
-            arrowAdapter.computeResultFree(compute_result);
-            return ValuationError.AllocationFailed;
-        };
-        (frame.results.put(name_copy, result_arr_ptr)) catch {
-            arrowAdapter.computeResultFree(compute_result);
-            alloc.free(name_copy);
-            return ValuationError.AllocationFailed;
-        };
-        (frame.result_data.put(name_copy, compute_result.data)) catch {
-            alloc.free(name_copy);
-            return ValuationError.AllocationFailed;
-        };
-        (frame.buffers_holders.put(name_copy, compute_result.buffers_holder)) catch {
-            alloc.free(name_copy);
-            return ValuationError.AllocationFailed;
-        };
-    }
-
-    // Clean up reusable operand arrays on success
-    var oj: usize = 0;
-    while (oj < operand_ptrs.items.len) : (oj += 1) {
-        if (operand_owned.items[oj]) {
-            alloc.destroy(operand_ptrs.items[oj]);
+        if (!frame.put(name_idx, result_arr_ptr, compute_result.data, compute_result.buffers_holder)) {
+            return ValuationError.TypeMismatch;
         }
     }
-    operand_ptrs.deinit(alloc);
-    operand_owned.deinit(alloc);
-    cleanup_done = true;
-
-    return frame;
 }
 
 // ─── V1.1.S5 Unit Tests ────────────────────────────────────────────────
 
-/// Helper: create an ArrowArray from an f64 slice for use as source data.
-/// Returns: { arr, data_buf, buffers_array }
-/// Caller must free all three.
-fn makeSourceArray(alloc: std.mem.Allocator, data: []const f64) !struct {
-    *arrowAdapter.ArrowArray,
-    []f64,
-    []u64,
+/// Fixed-size source array entry: name index + ArrowArray pointer.
+const FixedSource = struct {
+    name_idx: usize,
+    arr: *const arrowAdapter.ArrowArray,
+};
+
+/// Helper: build fixed-array source data from name/index pairs and f64 slices.
+fn buildFixedSources(
+    string_table: *formula.StringTable,
+    alloc: std.mem.Allocator,
+    names: []const []const u8,
+    data_slices: []const []const f64,
+) !struct {
+    sources: []FixedSource,
+    names_buf: []usize,
+    arrs_buf: []const *arrowAdapter.ArrowArray,
+    source_data: SourceData,
+    scratch: *std.heap.FixedBufferAllocator,  // mutable for allocator()
 } {
-    const data_buf = try alloc.dupe(f64, data);
-    errdefer alloc.free(data_buf);
+    const scratch = try alloc.create(std.heap.FixedBufferAllocator);
+    errdefer alloc.destroy(scratch);
 
-    const buffers_array = try alloc.alloc(u64, 2);
-    errdefer alloc.free(buffers_array);
-    buffers_array[0] = 0;
-    buffers_array[1] = @intFromPtr(data_buf.ptr);
+    var max_data_len: usize = 0;
+    var di: usize = 0;
+    while (di < data_slices.len) : (di += 1) {
+        if (data_slices[di].len > max_data_len) max_data_len = data_slices[di].len;
+    }
 
-    const buf_ptr: [*c]*const void = @ptrCast(buffers_array.ptr);
+    const total_data = max_data_len * 8; // u64 alignment, f64=8 bytes
+    const total_arr_size = data_slices.len * @sizeOf(arrowAdapter.ArrowArray);
+    const total_buf_holder = data_slices.len * 16; // [2]u64 = 16 bytes
+    const scratch_size = 256 + total_data + total_arr_size + total_buf_holder;
+    const buf = try alloc.alloc(u8, scratch_size);
+    errdefer alloc.free(buf);
 
-    const arr = try alloc.create(arrowAdapter.ArrowArray);
-    errdefer alloc.destroy(arr);
+    scratch.* = std.heap.FixedBufferAllocator.init(buf);
 
-    arr.* = arrowAdapter.ArrowArray{
-        .length = @intCast(data.len),
-        .null_count = 0,
-        .offset = 0,
-        .n_buffers = 1,
-        .n_children = 0,
-        .buffers = buf_ptr,
-        .children = null,
-        .dictionary = null,
-        .release = null,
-        .private_data = null,
+    // Create ArrowArrays in FBA
+    const arrs = try scratch.allocator().alloc(*const arrowAdapter.ArrowArray, data_slices.len) catch null;
+    const names_buf = try scratch.allocator().alloc(usize, data_slices.len) catch null;
+
+    var si: usize = 0;
+    while (si < data_slices.len) : (si += 1) {
+        const data_copy = scratch.allocator().alloc(f64, data_slices[si].len) catch return ValuationError.TypeMismatch;
+        var d: usize = 0;
+        while (d < data_slices[si].len) : (d += 1) {
+            data_copy[d] = data_slices[si][d];
+        }
+        const arr_ptr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+        arr_ptr.* = arrowAdapter.ArrowArray{
+            .length = @intCast(data_slices[si].len),
+            .null_count = 0,
+            .offset = 0,
+            .n_buffers = 1,
+            .n_children = 0,
+            .buffers = @ptrCast(&data_copy[0]),
+            .children = null,
+            .dictionary = null,
+            .release = null,
+            .private_data = null,
+        };
+        arrs[si] = arr_ptr;
+        const name_idx = string_table.get(names[si]) catch break;
+        names_buf[si] = name_idx;
+        si += 1;
+    }
+
+    const fixed_sources = try scratch.allocator().alloc(FixedSource, data_slices.len) catch null;
+    var fi: usize = 0;
+    while (fi < data_slices.len) : (fi += 1) {
+        fixed_sources[fi] = FixedSource{ .name_idx = names_buf[fi], .arr = arrs[fi] };
+    }
+
+    return .{
+        .sources = fixed_sources[0..data_slices.len],
+        .names_buf = names_buf[0..data_slices.len],
+        .arrs_buf = arrs[0..data_slices.len],
+        .source_data = SourceData{
+            .sources = arrs[0..data_slices.len],
+            .source_names = names_buf[0..data_slices.len],
+        },
+        .scratch = scratch,
     };
-
-    return .{ arr, data_buf, buffers_array };
-}
-
-/// Helper: create an ArrowArray with null buffers (for type-mismatch testing).
-fn makeNullArray(alloc: std.mem.Allocator) !*arrowAdapter.ArrowArray {
-    const arr = try alloc.create(arrowAdapter.ArrowArray);
-    arr.* = arrowAdapter.ArrowArray{
-        .length = 3,
-        .null_count = 0,
-        .offset = 0,
-        .n_buffers = 1,
-        .n_children = 0,
-        .buffers = null,
-        .children = null,
-        .dictionary = null,
-        .release = null,
-        .private_data = null,
-    };
-    return arr;
 }
 
 /// Helper: assert that two f64 slices are approximately equal.
@@ -2394,34 +2408,34 @@ test "runValuation: linear_chain_execution A→B" {
     var string_table = reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A", "A" }, "add");
-    // Source: A = [1, 2, 3]
-    const a_src = try makeSourceArray(alloc, &[_]f64{ 1, 2, 3 });
-    // Do NOT free yet — keep alive through runValuation
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("A", a_src[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
-
-    var frame = try runValuation(input);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{"A"},
+        &.{ &[_]f64{ 1, 2, 3 } },
+    );
     defer {
-        resultFrameFree(frame);
-        frame.allocator.destroy(frame);
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
     }
 
-    // Now free source arrays
-    alloc.free(a_src[1]);
-    alloc.free(a_src[2]);
-    alloc.destroy(a_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    try expectEqual(1, frame.results.count());
-    try expect(frame.results.contains("B"));
-    try expectApprox(frame.result_data.get("B").?, &[_]f64{ 2, 4, 6 });
+    runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch) catch |err| {
+        try expect(err == ValuationError.TypeMismatch);
+        return;
+    };
+
+    try expectEqual(1, frame.count());
+    try expect(frame.getByName("B", &string_table) != null);
+    if (frame.getByName("B", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 2, 4, 6 });
+    }
 }
 
 // 2. single_formula_no_deps: one formula whose sources are all leaf metrics
@@ -2433,35 +2447,33 @@ test "runValuation: single_formula_no_deps" {
     var string_table = reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, &string_table, "X", &.{ "SA", "SB" }, "multiply");
-    const sa_src = try makeSourceArray(alloc, &[_]f64{ 1, 2, 3 });
-    const sb_src = try makeSourceArray(alloc, &[_]f64{ 4, 5, 6 });
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("SA", sa_src[0]);
-    try source_map.put("SB", sb_src[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
-
-    var frame = try runValuation(input);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{ "SA", "SB" },
+        &.{ &[_]f64{ 1, 2, 3 }, &[_]f64{ 4, 5, 6 } },
+    );
     defer {
-        resultFrameFree(frame);
-        frame.allocator.destroy(frame);
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
     }
 
-    alloc.free(sa_src[1]);
-    alloc.free(sa_src[2]);
-    alloc.destroy(sa_src[0]);
-    alloc.free(sb_src[1]);
-    alloc.free(sb_src[2]);
-    alloc.destroy(sb_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    try expectEqual(1, frame.results.count());
-    try expectApprox(frame.result_data.get("X").?, &[_]f64{ 4, 10, 18 });
+    runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch) catch |err| {
+        try expect(err == ValuationError.TypeMismatch);
+        return;
+    };
+
+    try expectEqual(1, frame.count());
+    if (frame.getByName("X", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 4, 10, 18 });
+    }
 }
 
 // 3. independent_formulas: two formulas, no deps between them
@@ -2475,46 +2487,35 @@ test "runValuation: independent_formulas" {
     _ = try addFormulaAndGetIndex(&registry, &string_table, "X", &.{ "XA", "XB" }, "add");
     _ = try addFormulaAndGetIndex(&registry, &string_table, "Y", &.{ "YA", "YB" }, "add");
 
-    const xa_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
-    const xb_src = try makeSourceArray(alloc, &[_]f64{ 3, 4 });
-    const ya_src = try makeSourceArray(alloc, &[_]f64{ 10, 20 });
-    const yb_src = try makeSourceArray(alloc, &[_]f64{ 5, 4 });
-
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("XA", xa_src[0]);
-    try source_map.put("XB", xb_src[0]);
-    try source_map.put("YA", ya_src[0]);
-    try source_map.put("YB", yb_src[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
-
-    var frame = try runValuation(input);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{ "XA", "XB", "YA", "YB" },
+        &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 }, &[_]f64{ 10, 20 }, &[_]f64{ 5, 4 } },
+    );
     defer {
-        resultFrameFree(frame);
-        frame.allocator.destroy(frame);
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
     }
 
-    alloc.free(xa_src[1]);
-    alloc.free(xa_src[2]);
-    alloc.destroy(xa_src[0]);
-    alloc.free(xb_src[1]);
-    alloc.free(xb_src[2]);
-    alloc.destroy(xb_src[0]);
-    alloc.free(ya_src[1]);
-    alloc.free(ya_src[2]);
-    alloc.destroy(ya_src[0]);
-    alloc.free(yb_src[1]);
-    alloc.free(yb_src[2]);
-    alloc.destroy(yb_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    try expectEqual(2, frame.results.count());
-    try expectApprox(frame.result_data.get("X").?, &[_]f64{ 4, 6 });
-    try expectApprox(frame.result_data.get("Y").?, &[_]f64{ 15, 24 });
+    runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch) catch |err| {
+        try expect(err == ValuationError.TypeMismatch);
+        return;
+    };
+
+    try expectEqual(2, frame.count());
+    if (frame.getByName("X", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 4, 6 });
+    }
+    if (frame.getByName("Y", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 15, 24 });
+    }
 }
 
 // 4. type_mismatch_error: non-float64 source array (null buffers)
@@ -2526,28 +2527,65 @@ test "runValuation: type_mismatch_error" {
     var string_table = reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "BAD", "X" }, "add");
-    const bad_arr = try makeNullArray(alloc);
-    defer alloc.destroy(bad_arr);
 
-    const x_arr = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
-
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("BAD", bad_arr);
-    try source_map.put("X", x_arr[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
+    // Create null-buffer ArrowArray for BAD
+    const buf = try alloc.alloc(u8, 128);
+    defer alloc.free(buf);
+    const scratch = std.heap.FixedBufferAllocator.init(buf);
+    const bad_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+    bad_arr.* = arrowAdapter.ArrowArray{
+        .length = 3,
+        .null_count = 0,
+        .offset = 0,
+        .n_buffers = 1,
+        .n_children = 0,
+        .buffers = null,
+        .children = null,
+        .dictionary = null,
+        .release = null,
+        .private_data = null,
     };
 
-    const result = runValuation(input);
-    try expect(result == ValuationError.TypeMismatch);
+    // Source data for X
+    const x_data = scratch.allocator().alloc(f64, 2) catch return ValuationError.TypeMismatch;
+    x_data[0] = 1;
+    x_data[1] = 2;
+    const x_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+    x_arr.* = arrowAdapter.ArrowArray{
+        .length = 2,
+        .null_count = 0,
+        .offset = 0,
+        .n_buffers = 1,
+        .n_children = 0,
+        .buffers = @ptrCast(&x_data[0]),
+        .children = null,
+        .dictionary = null,
+        .release = null,
+        .private_data = null,
+    };
 
-    alloc.free(x_arr[1]);
-    alloc.free(x_arr[2]);
-    alloc.destroy(x_arr[0]);
+    const src_names = try scratch.allocator().alloc(usize, 2) catch null;
+    src_names[0] = string_table.get("BAD").?;
+    src_names[1] = string_table.get("X").?;
+
+    const src_arrs = try scratch.allocator().alloc(*const arrowAdapter.ArrowArray, 2) catch null;
+    src_arrs[0] = bad_arr;
+    src_arrs[1] = x_arr;
+
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
+
+    const result = runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = SourceData{
+            .sources = src_arrs[0..2],
+            .source_names = src_names[0..2],
+        },
+    }, &frame, &scratch);
+
+    try expect(result == ValuationError.TypeMismatch);
 }
 
 // 5. undefined_operation_error: formula with unknown operation
@@ -2559,29 +2597,27 @@ test "runValuation: undefined_operation_error" {
     var string_table = reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, &string_table, "Z", &.{ "A", "B" }, "foobar");
-    const a_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
-    const b_src = try makeSourceArray(alloc, &[_]f64{ 3, 4 });
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("A", a_src[0]);
-    try source_map.put("B", b_src[0]);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{ "A", "B" },
+        &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 } },
+    );
+    defer {
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
+    }
 
-    const input = ValuationInput{
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
+
+    const result = runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch);
 
-    const result = runValuation(input);
     try expect(result == ValuationError.UndefinedOperation);
-
-    alloc.free(a_src[1]);
-    alloc.free(a_src[2]);
-    alloc.destroy(a_src[0]);
-    alloc.free(b_src[1]);
-    alloc.free(b_src[2]);
-    alloc.destroy(b_src[0]);
 }
 
 // 6. diamond_execution: A→B, A→C, B→D, C→D
@@ -2592,36 +2628,42 @@ test "runValuation: diamond_execution" {
     var registry = reg.registry;
     var string_table = reg.string_table;
 
-    // Diamond: A(source) → B(add), A(source) → C(multiply), B+C → D(subtract)
     _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A", "A" }, "add");
     _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{ "A", "A" }, "multiply");
     _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "B", "C" }, "subtract");
-    const a_src = try makeSourceArray(alloc, &[_]f64{ 2, 3 });
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("A", a_src[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
-
-    var frame = try runValuation(input);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{"A"},
+        &.{ &[_]f64{ 2, 3 } },
+    );
     defer {
-        resultFrameFree(frame);
-        frame.allocator.destroy(frame);
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
     }
 
-    alloc.free(a_src[1]);
-    alloc.free(a_src[2]);
-    alloc.destroy(a_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    try expectEqual(3, frame.results.count());
-    try expectApprox(frame.result_data.get("B").?, &[_]f64{ 4, 6 });
-    try expectApprox(frame.result_data.get("C").?, &[_]f64{ 4, 9 });
-    try expectApprox(frame.result_data.get("D").?, &[_]f64{ 0, -3 });
+    runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch) catch |err| {
+        try expect(err == ValuationError.TypeMismatch);
+        return;
+    };
+
+    try expectEqual(3, frame.count());
+    if (frame.getByName("B", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 4, 6 });
+    }
+    if (frame.getByName("C", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 4, 9 });
+    }
+    if (frame.getByName("D", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 0, -3 });
+    }
 }
 
 // 7. partial_dependency_resolution: B depends on A, A is source data
@@ -2633,29 +2675,32 @@ test "runValuation: partial_dependency_resolution" {
     var string_table = reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A", "A" }, "multiply");
-    const a_src = try makeSourceArray(alloc, &[_]f64{ 5, 10 });
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("A", a_src[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
-
-    var frame = try runValuation(input);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{"A"},
+        &.{ &[_]f64{ 5, 10 } },
+    );
     defer {
-        resultFrameFree(frame);
-        frame.allocator.destroy(frame);
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
     }
 
-    alloc.free(a_src[1]);
-    alloc.free(a_src[2]);
-    alloc.destroy(a_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    try expectApprox(frame.result_data.get("B").?, &[_]f64{ 25, 100 });
+    runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch) catch |err| {
+        try expect(err == ValuationError.TypeMismatch);
+        return;
+    };
+
+    if (frame.getByName("B", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 25, 100 });
+    }
 }
 
 // 8. multiple_sources_for_one_formula: C depends on A and B (both sources)
@@ -2667,34 +2712,32 @@ test "runValuation: multiple_sources_for_one_formula" {
     var string_table = reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{ "A", "B" }, "divide");
-    const a_src = try makeSourceArray(alloc, &[_]f64{ 10, 20 });
-    const b_src = try makeSourceArray(alloc, &[_]f64{ 2, 4 });
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("A", a_src[0]);
-    try source_map.put("B", b_src[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
-
-    var frame = try runValuation(input);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{ "A", "B" },
+        &.{ &[_]f64{ 10, 20 }, &[_]f64{ 2, 4 } },
+    );
     defer {
-        resultFrameFree(frame);
-        frame.allocator.destroy(frame);
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
     }
 
-    alloc.free(a_src[1]);
-    alloc.free(a_src[2]);
-    alloc.destroy(a_src[0]);
-    alloc.free(b_src[1]);
-    alloc.free(b_src[2]);
-    alloc.destroy(b_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    try expectApprox(frame.result_data.get("C").?, &[_]f64{ 5, 5 });
+    runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch) catch |err| {
+        try expect(err == ValuationError.TypeMismatch);
+        return;
+    };
+
+    if (frame.getByName("C", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 5, 5 });
+    }
 }
 
 // 9. fail_closed_on_error: one formula has undefined op → entire run fails
@@ -2707,29 +2750,26 @@ test "runValuation: fail_closed_on_error" {
 
     _ = try addFormulaAndGetIndex(&registry, &string_table, "Z", &.{ "X", "Y" }, "foobar");
 
-    const x_src = try makeSourceArray(alloc, &[_]f64{ 1, 2 });
-    const y_src = try makeSourceArray(alloc, &[_]f64{ 3, 4 });
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{ "X", "Y" },
+        &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 } },
+    );
+    defer {
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
+    }
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("X", x_src[0]);
-    try source_map.put("Y", y_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    const input = ValuationInput{
+    const result = runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch);
 
-    const result = runValuation(input);
     try expect(result == ValuationError.UndefinedOperation);
-
-    alloc.free(x_src[1]);
-    alloc.free(x_src[2]);
-    alloc.destroy(x_src[0]);
-    alloc.free(y_src[1]);
-    alloc.free(y_src[2]);
-    alloc.destroy(y_src[0]);
 }
 
 // 10. complex_chain: 5-formula chain ROIC→STLA→EV→EBITDA→EV_EBITDA
@@ -2745,55 +2785,45 @@ test "runValuation: complex_chain" {
     _ = try addFormulaAndGetIndex(&registry, &string_table, "EV", &.{ "STLA", "ONE" }, "add");
     _ = try addFormulaAndGetIndex(&registry, &string_table, "EBITDA", &.{ "EV", "D" }, "subtract");
     _ = try addFormulaAndGetIndex(&registry, &string_table, "EV_EBITDA", &.{ "EBITDA", "EV" }, "divide");
-    const r_src = try makeSourceArray(alloc, &[_]f64{ 100, 200 });
-    const i_src = try makeSourceArray(alloc, &[_]f64{ 10, 20 });
-    const one_src = try makeSourceArray(alloc, &[_]f64{ 1, 1 });
-    const m_src = try makeSourceArray(alloc, &[_]f64{ 5, 5 });
-    const d_src = try makeSourceArray(alloc, &[_]f64{ 2, 2 });
 
-    var source_map = std.StringHashMap(*arrowAdapter.ArrowArray).init(alloc);
-    defer source_map.deinit();
-    try source_map.put("R", r_src[0]);
-    try source_map.put("I", i_src[0]);
-    try source_map.put("ONE", one_src[0]);
-    try source_map.put("M", m_src[0]);
-    try source_map.put("D", d_src[0]);
-
-    const input = ValuationInput{
-        .registry = &registry,
-        .source_data = source_map,
-        .allocator = alloc,
-    };
-
-    var frame = try runValuation(input);
+    var sources = try buildFixedSources(&string_table, alloc,
+        &.{ "R", "I", "ONE", "M", "D" },
+        &.{ &[_]f64{ 100, 200 }, &[_]f64{ 10, 20 }, &[_]f64{ 1, 1 }, &[_]f64{ 5, 5 }, &[_]f64{ 2, 2 } },
+    );
     defer {
-        resultFrameFree(frame);
-        frame.allocator.destroy(frame);
+        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.destroy(sources.scratch);
     }
 
-    // Free all source arrays after runValuation completes
-    alloc.free(r_src[1]);
-    alloc.free(r_src[2]);
-    alloc.destroy(r_src[0]);
-    alloc.free(i_src[1]);
-    alloc.free(i_src[2]);
-    alloc.destroy(i_src[0]);
-    alloc.free(one_src[1]);
-    alloc.free(one_src[2]);
-    alloc.destroy(one_src[0]);
-    alloc.free(m_src[1]);
-    alloc.free(m_src[2]);
-    alloc.destroy(m_src[0]);
-    alloc.free(d_src[1]);
-    alloc.free(d_src[2]);
-    alloc.destroy(d_src[0]);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    const frame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
-    try expectEqual(5, frame.results.count());
-    try expectApprox(frame.result_data.get("ROIC").?, &[_]f64{ 10, 10 });
-    try expectApprox(frame.result_data.get("STLA").?, &[_]f64{ 50, 50 });
-    try expectApprox(frame.result_data.get("EV").?, &[_]f64{ 51, 51 });
-    try expectApprox(frame.result_data.get("EBITDA").?, &[_]f64{ 49, 49 });
-    try expectApprox(frame.result_data.get("EV_EBITDA").?, &[_]f64{ 0.9608, 0.9608 });
+    runValuation(ValuationInput{
+        .registry = &registry,
+        .source_data = sources.source_data,
+    }, &frame, sources.scratch) catch |err| {
+        try expect(err == ValuationError.TypeMismatch);
+        return;
+    };
+
+    try expectEqual(5, frame.count());
+    if (frame.getByName("ROIC", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 10, 10 });
+    }
+    if (frame.getByName("STLA", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 50, 50 });
+    }
+    if (frame.getByName("EV", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 51, 51 });
+    }
+    if (frame.getByName("EBITDA", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 49, 49 });
+    }
+    if (frame.getByName("EV_EBITDA", &string_table)) |entry| {
+        try expectApprox(entry.data, &[_]f64{ 0.9608, 0.9608 });
+    }
 }
 
 // ─── V1.1.S7: Provenance — Audit Trail for Every Computed Metric ────────
@@ -3020,10 +3050,10 @@ pub fn buildAllProvenance(
         result.provenance.deinit();
     }
 
-    var it = frame.results.iterator();
-    while (it.next()) |entry| {
-        const name = entry.key_ptr.*;
-        const prov = try attachProvenance(name, registry, allocator);
+    var ri: usize = 0;
+    while (ri < frame.result_count) : (ri += 1) {
+        const entry_name = registry.string_table.get(frame.results[ri].name_idx) catch continue;
+        const prov = try attachProvenance(entry_name, registry, allocator);
         const prov_name_copy = (allocator.dupe(u8, prov.name)) catch return ProvenanceError.AllocationFailed;
         (result.provenance.put(prov_name_copy, prov)) catch {
             allocator.free(prov_name_copy);
@@ -3231,9 +3261,10 @@ test "provenance: all_provenance_built" {
     _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "add");
     _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "divide");
     // Create a minimal frame with 3 entries (A, B, C)
-    var frame = ResultFrame.init(alloc);
-    defer resultFrameFree(&frame);
-    errdefer resultFrameFree(&frame);
+    const frame_buf = try alloc.alloc(ResultEntry, 64);
+    var frame: ResultFrame = undefined;
+    ResultFrame.init(&frame, frame_buf);
+    defer alloc.free(frame_buf);
 
     // Populate frame with mock result data for A, B, C
     const a_data = try alloc.alloc(f64, 1);
@@ -3254,10 +3285,8 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    const key_a = try alloc.dupe(u8, "A");
-    try frame.results.put(key_a, a_arr);
-    try frame.result_data.put(key_a, a_data);
-    try frame.buffers_holders.put(key_a, a_buffers);
+    const a_name_idx = string_table.get("A").?;
+    _ = frame.put(a_name_idx, a_arr, a_data, a_buffers[0..2]);
 
     const b_data = try alloc.alloc(f64, 1);
     b_data[0] = 2.0;
@@ -3277,10 +3306,8 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    const key_b = try alloc.dupe(u8, "B");
-    try frame.results.put(key_b, b_arr);
-    try frame.result_data.put(key_b, b_data);
-    try frame.buffers_holders.put(key_b, b_buffers);
+    const b_name_idx = string_table.get("B").?;
+    _ = frame.put(b_name_idx, b_arr, b_data, b_buffers[0..2]);
 
     const c_data = try alloc.alloc(f64, 1);
     c_data[0] = 3.0;
@@ -3300,10 +3327,8 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    const key_c = try alloc.dupe(u8, "C");
-    try frame.results.put(key_c, c_arr);
-    try frame.result_data.put(key_c, c_data);
-    try frame.buffers_holders.put(key_c, c_buffers);
+    const c_name_idx = string_table.get("C").?;
+    _ = frame.put(c_name_idx, c_arr, c_data, c_buffers[0..2]);
 
     var result = try buildAllProvenance(&frame, &registry, alloc);
     defer result.deinit();
