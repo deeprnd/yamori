@@ -590,22 +590,13 @@ pub const arrowAdapter = struct {
     pub const ArrowComputeResult = struct {
         output_array: [*c]ArrowArray,
         data: []f64, // The actual f64 data for test access
-        allocator: std.mem.Allocator,
         buffers_holder: ?[]u64, // [0]=null bitmap ptr, [1]=data ptr (owned)
     };
 
-    /// Free an ArrowComputeResult
-    pub fn computeResultFree(result: ArrowComputeResult) void {
-        const alloc = result.allocator;
-        // Free the data buffer
-        alloc.free(result.data);
-        // Free the buffers holder if allocated
-        if (result.buffers_holder) |bufs| {
-            alloc.free(bufs);
-        }
-        // Free the ArrowArray struct itself — cast unbounded pointer back to single-item
-        const ptr: *arrowAdapter.ArrowArray = @ptrFromInt(@intFromPtr(result.output_array));
-        alloc.destroy(ptr);
+    /// Free an ArrowComputeResult — no-op when allocator is FixedBufferAllocator.
+    /// Caller-provided FBA means alloc.free() and alloc.destroy() are no-ops.
+    pub fn computeResultFree(_result: ArrowComputeResult) void {
+        _ = _result;
     }
 
     /// Look up Arrow function name by Yamori operation (comptime table lookup)
@@ -631,22 +622,23 @@ pub const arrowAdapter = struct {
     }
 
     /// Execute a formula operation on Arrow float64 arrays.
-    /// For V1.1, reads raw data from ArrowArray buffers and returns a new ArrowArray.
+    /// Zero allocation — all output buffers must be pre-allocated by the caller.
     /// The buffers field points to an array of pointers:
     ///   buffers[0] = validity bitmap (may be null)
     ///   buffers[1] = float64 data
     pub fn executeOperation(
         op_name: []const u8,
         operands: []const *ArrowArray,
-        allocator: std.mem.Allocator,
-    ) AdapterError!ArrowComputeResult {
+        out_data: []f64,
+        out_arr: *ArrowArray,
+        out_buffers_holder: []u64,
+    ) AdapterError!void {
         try validateFloat64Arrays(operands);
 
         if (operands.len < 2) return AdapterError.TypeMismatch;
 
         const len = operands[0].*.length;
-        if (len <= 0) return AdapterError.TypeMismatch;
-        if (len > std.math.maxInt(usize)) return AdapterError.TypeMismatch;
+        if (len <= 0 or len > std.math.maxInt(usize)) return AdapterError.TypeMismatch;
 
         // Validate all operands have the same length
         for (operands, 0..) |arr, i| {
@@ -654,53 +646,30 @@ pub const arrowAdapter = struct {
         }
 
         // Get data buffer pointers (index 1 = data buffer after validity bitmap at [0])
-        // Read data buffer pointers from operands (buffers[1] = data, buffers[0] = validity/null)
-        const buf0: [*c]*const void = operands[0].*.buffers;
-        const buf1: [*c]*const void = operands[1].*.buffers;
-        const data0: [*]const f64 = @ptrFromInt(@intFromPtr(buf0[1]));
-        const data1: [*]const f64 = @ptrFromInt(@intFromPtr(buf1[1]));
+        var d: usize = 0;
+        while (d < len) : (d += 1) {
+            const buf0: [*c]*const void = operands[0].*.buffers;
+            const buf1: [*c]*const void = operands[1].*.buffers;
+            const data0: [*]const f64 = @ptrFromInt(@intFromPtr(buf0[1]));
+            const data1: [*]const f64 = @ptrFromInt(@intFromPtr(buf1[1]));
 
-        // Allocate output
-        var out_alloc = allocator.alloc(f64, @intCast(len)) catch return AdapterError.AllocationFailed;
-        defer out_alloc = undefined;
-
-        if (std.mem.eql(u8, op_name, "add")) {
-            for (0..@intCast(len)) |i| {
-                out_alloc[i] = data0[i] + data1[i];
+            if (std.mem.eql(u8, op_name, "add")) {
+                out_data[d] = data0[d] + data1[d];
+            } else if (std.mem.eql(u8, op_name, "subtract")) {
+                out_data[d] = data0[d] - data1[d];
+            } else if (std.mem.eql(u8, op_name, "multiply")) {
+                out_data[d] = data0[d] * data1[d];
+            } else if (std.mem.eql(u8, op_name, "divide")) {
+                if (data1[d] == 0) return AdapterError.TypeMismatch;
+                out_data[d] = data0[d] / data1[d];
+            } else {
+                return AdapterError.UndefinedOperation;
             }
-        } else if (std.mem.eql(u8, op_name, "subtract")) {
-            for (0..@intCast(len)) |i| {
-                out_alloc[i] = data0[i] - data1[i];
-            }
-        } else if (std.mem.eql(u8, op_name, "multiply")) {
-            for (0..@intCast(len)) |i| {
-                out_alloc[i] = data0[i] * data1[i];
-            }
-        } else if (std.mem.eql(u8, op_name, "divide")) {
-            for (0..@intCast(len)) |i| {
-                if (data1[i] == 0) {
-                    allocator.free(out_alloc);
-                    return AdapterError.TypeMismatch;
-                }
-                out_alloc[i] = data0[i] / data1[i];
-            }
-        } else {
-            allocator.free(out_alloc);
-            return AdapterError.UndefinedOperation;
         }
 
-        // Build output ArrowArray
-        const out_arr = allocator.create(ArrowArray) catch return AdapterError.AllocationFailed;
-
-        // Allocate proper buffers array: [0] = null bitmap ptr, [1] = data ptr
-        const buffers_holder = allocator.alloc(u64, 2) catch {
-            allocator.destroy(out_arr);
-            return AdapterError.AllocationFailed;
-        };
-        buffers_holder[0] = 0; // no validity bitmap
-        buffers_holder[1] = @intFromPtr(out_alloc.ptr); // data buffer
-
-        const buf_ptr: [*c]*const void = @ptrCast(buffers_holder.ptr);
+        // Build output ArrowArray (caller-owned)
+        out_buffers_holder[0] = 0;
+        out_buffers_holder[1] = @intFromPtr(out_data.ptr);
 
         out_arr.* = ArrowArray{
             .length = len,
@@ -708,29 +677,25 @@ pub const arrowAdapter = struct {
             .offset = 0,
             .n_buffers = 1,
             .n_children = 0,
-            .buffers = buf_ptr,
+            .buffers = @ptrCast(out_buffers_holder.ptr),
             .children = null,
             .dictionary = null,
             .release = null,
             .private_data = null,
         };
-
-        return ArrowComputeResult{
-            .output_array = out_arr,
-            .data = out_alloc,
-            .allocator = allocator,
-            .buffers_holder = buffers_holder,
-        };
     }
 
     /// Resolve a Yamori operation name to Arrow function name, then execute
+    /// All output buffers must be pre-allocated by the caller.
     pub fn resolveAndExecute(
         yamori_op: []const u8,
         operands: []const *ArrowArray,
-        allocator: std.mem.Allocator,
-    ) AdapterError!ArrowComputeResult {
+        out_data: []f64,
+        out_arr: *ArrowArray,
+        out_buffers_holder: []u64,
+    ) AdapterError!void {
         const arrow_func = try resolveArrowFunc(yamori_op);
-        return executeOperation(arrow_func, operands, allocator);
+        return executeOperation(arrow_func, operands, out_data, out_arr, out_buffers_holder);
     }
 };
 
@@ -765,10 +730,8 @@ pub const FormulaRegistryFixture = struct {
 
 /// Helper: set up a formula registry with caller-owned buffers.
 /// Caller must keep the fixture alive as long as the registry is used.
-fn makeRegistry() FormulaRegistryFixture {
-    var fixture: FormulaRegistryFixture = undefined;
-    fixture.init();
-    return fixture;
+fn makeRegistry(out: *FormulaRegistryFixture) void {
+    out.init();
 }
 
 /// Helper: intern a name and operation string, add formula with sources.
@@ -1186,7 +1149,8 @@ test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
 // ─── Dependency Resolver Tests ──────────────────────────────────────────
 
 test "linear_chain: A→B→C produces [A, B, C]" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1206,7 +1170,8 @@ test "linear_chain: A→B→C produces [A, B, C]" {
 }
 
 test "independent_formulas: X,Y,Z no deps → [X, Y, Z] lex order" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1226,7 +1191,8 @@ test "independent_formulas: X,Y,Z no deps → [X, Y, Z] lex order" {
 }
 
 test "diamond_dependency: A→B, A→C, B→D, C→D" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1264,7 +1230,8 @@ test "diamond_dependency: A→B, A→C, B→D, C→D" {
 }
 
 test "empty_registry returns empty slice" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1276,7 +1243,8 @@ test "empty_registry returns empty slice" {
 }
 
 test "single_formula returns [formula_name]" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1291,7 +1259,8 @@ test "single_formula returns [formula_name]" {
 }
 
 test "multiple_chains_parallel: A→B and X→Y" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1329,7 +1298,8 @@ test "multiple_chains_parallel: A→B and X→Y" {
 }
 
 test "complex_diamond: A→B, A→C, B→D, C→D, D→E" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1365,7 +1335,8 @@ test "complex_diamond: A→B, A→C, B→D, C→D, D→E" {
 }
 
 test "self_contained_chain: ROIC→STLA→EV_EBITDA" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1384,7 +1355,8 @@ test "self_contained_chain: ROIC→STLA→EV_EBITDA" {
 }
 
 test "lexicographic_tiebreaking: Beta and WACC" {
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -1405,7 +1377,8 @@ test "determinism: same input 10 times produces identical output" {
 
     var i: usize = 0;
     while (i < 10) : (i += 1) {
-        const reg = makeRegistry();
+        var reg: FormulaRegistryFixture = undefined;
+        makeRegistry(&reg);
         var registry = reg.registry;
         const string_table = &reg.string_table;
 
@@ -1457,7 +1430,8 @@ fn detectCycleIndex(
 }
 
 test "simple_cycle: A→B, B→A detects cycle" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1477,7 +1451,8 @@ test "simple_cycle: A→B, B→A detects cycle" {
 }
 
 test "longer_cycle: A→B→C→A detects cycle" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1492,7 +1467,8 @@ test "longer_cycle: A→B→C→A detects cycle" {
 }
 
 test "self_reference: A→A detects cycle" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1505,7 +1481,8 @@ test "self_reference: A→A detects cycle" {
 }
 
 test "no_cycle_linear: A→B→C succeeds" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1519,7 +1496,8 @@ test "no_cycle_linear: A→B→C succeeds" {
 }
 
 test "no_cycle_diamond: A→B, A→C, B→D, C→D succeeds" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1534,7 +1512,8 @@ test "no_cycle_diamond: A→B, A→C, B→D, C→D succeeds" {
 }
 
 test "undefined_reference_no_cycle: Ghost ref doesn't trigger cycle" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1547,7 +1526,8 @@ test "undefined_reference_no_cycle: Ghost ref doesn't trigger cycle" {
 }
 
 test "cycle_through_undefined: partial graph then close cycle" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1560,7 +1540,8 @@ test "cycle_through_undefined: partial graph then close cycle" {
 }
 
 test "multiple_cycles_detects_one: two separate cycles" {
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     var string_table = &reg.string_table;
 
@@ -1577,8 +1558,9 @@ test "multiple_cycles_detects_one: two separate cycles" {
 
 // ─── Arrow Adapter Tests ────────────────────────────────────────────────
 
-// Helper to build ArrowArrays from f64 data for testing
-// Each test gets its own heap-allocated buffers to avoid dangling pointers.
+// Helper to build ArrowArrays from f64 data for testing.
+// All allocations come from the passed allocator — callers MUST use
+// a FixedBufferAllocator so no heap is touched.
 fn buildArrowArray(
     alloc: std.mem.Allocator,
     data: []const f64,
@@ -1590,19 +1572,16 @@ fn buildArrowArray(
     format_buf: []u8,
 } {
     const data_buf = try alloc.dupe(f64, data);
-    errdefer alloc.free(data_buf);
 
     // buffers_array stores 2 u64 values:
     // [0] = 0 (null pointer for no validity bitmap)
     // [1] = @intFromPtr(data_buf) (data pointer)
     const buffers_array = try alloc.alloc(u64, 2);
-    errdefer alloc.free(buffers_array);
 
     buffers_array[0] = 0;
     buffers_array[1] = @intFromPtr(data_buf.ptr);
 
     const fmt_buf = try alloc.dupe(u8, format_str);
-    errdefer alloc.free(fmt_buf);
 
     // Cast the u64 array to [*c]*const void for the ArrowArray.buffers field
     const buf_ptr: [*c]*const void = @ptrCast(buffers_array.ptr);
@@ -1652,394 +1631,376 @@ test "arrow_adapter: resolveArrowFunc('unknown') → UndefinedOperation" {
 }
 
 test "arrow_adapter: executeOperation(add) [1,2,3]+[4,5,6]=[5,7,9]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 1, 2, 3 };
     const b = [3]f64{ 4, 5, 6 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("add", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(@as(i64, 3), result.output_array.*.length);
-    try expectEqual(5.0, result.data[0]);
-    try expectEqual(7.0, result.data[1]);
-    try expectEqual(9.0, result.data[2]);
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(@as(i64, 3), out_arr.length);
+    try expectEqual(5.0, out_data[0]);
+    try expectEqual(7.0, out_data[1]);
+    try expectEqual(9.0, out_data[2]);
 }
 
 test "arrow_adapter: executeOperation(subtract) [10,20,30]-[1,2,3]=[9,18,27]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 10, 20, 30 };
     const b = [3]f64{ 1, 2, 3 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("subtract", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(9.0, result.data[0]);
-    try expectEqual(18.0, result.data[1]);
-    try expectEqual(27.0, result.data[2]);
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("subtract", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(9.0, out_data[0]);
+    try expectEqual(18.0, out_data[1]);
+    try expectEqual(27.0, out_data[2]);
 }
 
 test "arrow_adapter: executeOperation(multiply) [1,2,3]*[4,5,6]=[4,10,18]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 1, 2, 3 };
     const b = [3]f64{ 4, 5, 6 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("multiply", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(4.0, result.data[0]);
-    try expectEqual(10.0, result.data[1]);
-    try expectEqual(18.0, result.data[2]);
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("multiply", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(4.0, out_data[0]);
+    try expectEqual(10.0, out_data[1]);
+    try expectEqual(18.0, out_data[2]);
 }
 
 test "arrow_adapter: executeOperation(divide) [10,20,30]/[2,4,6]=[5,5,5]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 10, 20, 30 };
     const b = [3]f64{ 2, 4, 6 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("divide", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(5.0, result.data[0]);
-    try expectEqual(5.0, result.data[1]);
-    try expectEqual(5.0, result.data[2]);
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("divide", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(5.0, out_data[0]);
+    try expectEqual(5.0, out_data[1]);
+    try expectEqual(5.0, out_data[2]);
 }
 
 test "arrow_adapter: executeOperation(divide) by zero → TypeMismatch" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 10, 20, 30 };
     const b = [3]f64{ 2, 0, 6 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = arrowAdapter.executeOperation("divide", operands, allocator);
+
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    const result = arrowAdapter.executeOperation("divide", operands, &out_data, &out_arr, &out_buf_holder);
     try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
 
 test "arrow_adapter: executeOperation(empty_operands → TypeMismatch" {
-    const allocator = std.testing.allocator;
-
-    const data_a = [1]f64{1.0};
-    const data_b = [1]f64{2.0};
-
-    const arr_a = try buildArrowArray(allocator, data_a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    const arr_b = try buildArrowArray(allocator, data_b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
-
-    // Pass 0 operands (empty slice with correct type)
     const empty_operands: []const *arrowAdapter.ArrowArray = &.{};
-    const result = arrowAdapter.executeOperation("add", empty_operands, allocator);
+
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    const result = arrowAdapter.executeOperation("add", empty_operands, &out_data, &out_arr, &out_buf_holder);
     try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
 
 test "arrow_adapter: executeOperation(single_operand → TypeMismatch" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 1, 2, 3 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
 
-    // Pass 1 operand
     const operands = &.{&arr_a.arrow_arr};
-    const result = arrowAdapter.executeOperation("add", operands, allocator);
+
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    const result = arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
     try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
 
 test "arrow_adapter: executeOperation(undefined_op → UndefinedOperation" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [2]f64{ 1, 2 };
     const b = [2]f64{ 3, 4 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = arrowAdapter.executeOperation("power", operands, allocator);
+
+    var out_data: [2]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    const result = arrowAdapter.executeOperation("power", operands, &out_data, &out_arr, &out_buf_holder);
     try expect(result == arrowAdapter.AdapterError.UndefinedOperation);
 }
 
 test "arrow_adapter: resolveAndExecute(add) via comptime lookup" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 1, 2, 3 };
     const b = [3]f64{ 4, 5, 6 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.resolveAndExecute("add", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(5.0, result.data[0]);
-    try expectEqual(7.0, result.data[1]);
-    try expectEqual(9.0, result.data[2]);
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.resolveAndExecute("add", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(5.0, out_data[0]);
+    try expectEqual(7.0, out_data[1]);
+    try expectEqual(9.0, out_data[2]);
 }
 
 test "arrow_adapter: resolveAndExecute(subtract) via comptime lookup" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 10, 20, 30 };
     const b = [3]f64{ 1, 2, 3 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.resolveAndExecute("subtract", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(9.0, result.data[0]);
-    try expectEqual(18.0, result.data[1]);
-    try expectEqual(27.0, result.data[2]);
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.resolveAndExecute("subtract", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(9.0, out_data[0]);
+    try expectEqual(18.0, out_data[1]);
+    try expectEqual(27.0, out_data[2]);
 }
 
 test "arrow_adapter: resolveAndExecute(unknown_op → UndefinedOperation" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [2]f64{ 1, 2 };
     const b = [2]f64{ 3, 4 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = arrowAdapter.resolveAndExecute("power", operands, allocator);
+
+    var out_data: [2]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    const result = arrowAdapter.resolveAndExecute("power", operands, &out_data, &out_arr, &out_buf_holder);
     try expect(result == arrowAdapter.AdapterError.UndefinedOperation);
 }
 
 test "arrow_adapter: computeResultFree does not leak" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [3]f64{ 1, 2, 3 };
     const b = [3]f64{ 4, 5, 6 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("add", operands, allocator);
-    arrowAdapter.computeResultFree(result);
+
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
 }
 
 test "arrow_adapter: executeOperation(negative_values_add) [-1,-2]+[3,4]=[2,2]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [2]f64{ -1, -2 };
     const b = [2]f64{ 3, 4 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("add", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(2.0, result.data[0]);
-    try expectEqual(2.0, result.data[1]);
+    var out_data: [2]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(2.0, out_data[0]);
+    try expectEqual(2.0, out_data[1]);
 }
 
 test "arrow_adapter: executeOperation(small_decimal_values) [0.1,0.2]+[0.3,0.4]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [2]f64{ 0.1, 0.2 };
     const b = [2]f64{ 0.3, 0.4 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("add", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expect(@abs(result.data[0] - 0.4) < 1e-9);
-    try expect(@abs(result.data[1] - 0.6) < 1e-9);
+    var out_data: [2]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expect(@abs(out_data[0] - 0.4) < 1e-9);
+    try expect(@abs(out_data[1] - 0.6) < 1e-9);
 }
 
 test "arrow_adapter: executeOperation(large_values) [1e10,1e10]+[1e10,1e10]=[2e10,2e10]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [2]f64{ 1e10, 1e10 };
     const b = [2]f64{ 1e10, 1e10 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("add", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(2e10, result.data[0]);
-    try expectEqual(2e10, result.data[1]);
+    var out_data: [2]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(2e10, out_data[0]);
+    try expectEqual(2e10, out_data[1]);
 }
 
 test "arrow_adapter: executeOperation(single_element) [5.0]+[3.0]=[8.0]" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [1]f64{5.0};
     const b = [1]f64{3.0};
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = try arrowAdapter.executeOperation("add", operands, allocator);
-    defer arrowAdapter.computeResultFree(result);
 
-    try expectEqual(@as(i64, 1), result.output_array.*.length);
-    try expectEqual(8.0, result.data[0]);
+    var out_data: [1]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    try arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
+
+    try expectEqual(@as(i64, 1), out_arr.length);
+    try expectEqual(8.0, out_data[0]);
 }
 
 test "arrow_adapter: executeOperation(mismatched_length → TypeMismatch" {
-    const allocator = std.testing.allocator;
+    var scratch: [512]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
     const a = [2]f64{ 1, 2 };
     const b = [3]f64{ 4, 5, 6 };
 
-    var arr_a = try buildArrowArray(allocator, a[0..], "d");
-    defer allocator.free(arr_a.data_buf);
-    defer allocator.free(arr_a.buffers_array);
-    defer allocator.free(arr_a.format_buf);
-
-    var arr_b = try buildArrowArray(allocator, b[0..], "d");
-    defer allocator.free(arr_b.data_buf);
-    defer allocator.free(arr_b.buffers_array);
-    defer allocator.free(arr_b.format_buf);
+    var arr_a = try buildArrowArray(alloc, a[0..], "d");
+    var arr_b = try buildArrowArray(alloc, b[0..], "d");
 
     const operands = &.{ &arr_a.arrow_arr, &arr_b.arrow_arr };
-    const result = arrowAdapter.executeOperation("add", operands, allocator);
+
+    var out_data: [3]f64 = undefined;
+    var out_buf_holder: [2]u64 = undefined;
+    var out_arr: arrowAdapter.ArrowArray = undefined;
+
+    const result = arrowAdapter.executeOperation("add", operands, &out_data, &out_arr, &out_buf_holder);
     try expect(result == arrowAdapter.AdapterError.TypeMismatch);
 }
+
 
 // ─── C ABI Validation ────────────────────────────────────────────────────
 
@@ -2117,7 +2078,7 @@ pub const ResultFrame = struct {
 
 /// Heap-free source data lookup: caller-owned fixed-size array of source ArrowArrays.
 pub const SourceData = struct {
-    sources: []const *arrowAdapter.ArrowArray,
+    sources: []*const arrowAdapter.ArrowArray,
     source_names: []const usize,  // parallel array of string table indices
 
     /// Lookup a source by string table index. Returns null if not found.
@@ -2155,16 +2116,54 @@ pub fn resultFrameFree(_frame: *ResultFrame) void {
     _ = _frame;
 }
 
+/// Pre-allocated scratch resources for runValuation. All buffers are
+/// allocated by the test caller before calling runValuation. The library
+/// performs zero allocation or deallocation.
+pub const ValuationScratch = struct {
+    arrs: []arrowAdapter.ArrowArray,
+    data: [][]f64,
+    buf_holders: [][]u64,
+    slot_next: usize,
+
+    pub fn init(self: *ValuationScratch, arrs: []arrowAdapter.ArrowArray, data: [][]f64, buf_holders: [][]u64) void {
+        self.arrs = arrs;
+        self.data = data;
+        self.buf_holders = buf_holders;
+        self.slot_next = 0;
+    }
+
+    /// Claim the next pre-allocated slot. Returns null if exhausted.
+    pub fn claimArr(s: *ValuationScratch) ?*arrowAdapter.ArrowArray {
+        const idx = s.slot_next;
+        if (idx >= s.arrs.len) return null;
+        s.slot_next += 1;
+        return &s.arrs[idx];
+    }
+
+    pub fn claimData(s: *ValuationScratch) ?[]f64 {
+        const idx = s.slot_next;
+        if (idx >= s.data.len) return null;
+        s.slot_next += 1;
+        return s.data[idx];
+    }
+
+    pub fn claimBufHolder(s: *ValuationScratch) ?[]u64 {
+        const idx = s.slot_next;
+        if (idx >= s.buf_holders.len) return null;
+        s.slot_next += 1;
+        return s.buf_holders[idx];
+    }
+};
+
 /// Main valuation runner: traverse graph in topological order, execute each
 /// formula via the Arrow adapter, collect results into ResultFrame.
 /// Fail-closed: any error returns the error without writing to frame.
-/// All ArrowArray structs and data buffers are allocated in scratch (FBA).
+/// Zero allocation — all output buffers must be pre-allocated via scratch.
 pub fn runValuation(
     input: ValuationInput,
     frame: *ResultFrame,
-    scratch: *std.heap.FixedBufferAllocator,  // mutable for allocator()
+    scratch: *ValuationScratch,
 ) ValuationError!void {
-    const alloc = scratch.allocator();
     // Step 1: resolve dependencies to get topological order (heap-free)
     var order_buf: [64]usize = undefined;
     var in_deg_buf: [64]usize = undefined;
@@ -2199,26 +2198,33 @@ pub fn runValuation(
             const src_name_idx = entry.sources[si];
 
             if (src_data.get(src_name_idx)) |src_arr| {
-                // Source is a leaf metric — copy into owned ArrowArray in FBA
+                // Source is a leaf metric — copy into owned ArrowArray
                 const len = src_arr.*.length;
                 if (len <= 0 or len > std.math.maxInt(usize)) return ValuationError.TypeMismatch;
 
-                const copied_data = scratch.allocator().alloc(f64, @intCast(len)) catch return ValuationError.TypeMismatch;
-                const buf0: [*c]*const void = src_arr.*.buffers;
-                const src_data_ptr: [*]const f64 = @ptrFromInt(@intFromPtr(buf0[1]));
+                const copied_data = scratch.claimData() orelse return ValuationError.AllocationFailed;
+
+                // Read data from source ArrowArray's data buffer (index 1)
+                const src_buf0: [*c]*const void = src_arr.*.buffers;
+                const src_data_ptr: [*]const f64 = @ptrFromInt(@intFromPtr(src_buf0[1]));
                 var d: usize = 0;
                 while (d < len) : (d += 1) {
                     copied_data[d] = src_data_ptr[d];
                 }
 
-                const frame_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+                // Create proper buffers holder for ArrowArray format
+                const buf_holder = scratch.claimBufHolder() orelse return ValuationError.AllocationFailed;
+                buf_holder[0] = 0;
+                buf_holder[1] = @intFromPtr(copied_data.ptr);
+
+                const frame_arr = scratch.claimArr() orelse return ValuationError.AllocationFailed;
                 frame_arr.* = arrowAdapter.ArrowArray{
                     .length = len,
                     .null_count = 0,
                     .offset = 0,
                     .n_buffers = 1,
                     .n_children = 0,
-                    .buffers = @ptrCast(&copied_data[0]),
+                    .buffers = @ptrCast(buf_holder.ptr),
                     .children = null,
                     .dictionary = null,
                     .release = null,
@@ -2228,7 +2234,7 @@ pub fn runValuation(
                 operand_ptrs[operand_count] = frame_arr;
                 operand_data[operand_count] = copied_data[0..@intCast(len)];
                 operand_count += 1;
-            } else if (frame.get(name_idx)) |cached| {
+            } else if (frame.get(src_name_idx)) |cached| {
                 // Source is a previously computed result — use directly
                 operand_ptrs[operand_count] = cached.arr;
                 operand_data[operand_count] = cached.data;
@@ -2240,39 +2246,41 @@ pub fn runValuation(
 
         // Execute the operation (2+ operands) or pass-through (1 operand)
         if (operand_count == 1) {
-            // Single source — pass through: copy data from source to new FBA allocation
+            // Single source — pass through: copy data from source to pre-allocated buffer
             const src_arr = operand_ptrs[0];
             const len = src_arr.*.length;
             if (len <= 0 or len > std.math.maxInt(usize)) return ValuationError.TypeMismatch;
 
-            const copied_data = scratch.allocator().alloc(f64, @intCast(len)) catch return ValuationError.TypeMismatch;
-            const buf0: [*c]*const void = src_arr.*.buffers;
-            const src_data_ptr: [*]const f64 = @ptrFromInt(@intFromPtr(buf0[1]));
+            const copied_data = scratch.claimData() orelse return ValuationError.AllocationFailed;
+
+            // Read data from source ArrowArray's data buffer (index 1)
+            const src_buf0: [*c]*const void = src_arr.*.buffers;
+            const src_data_ptr: [*]const f64 = @ptrFromInt(@intFromPtr(src_buf0[1]));
             var d: usize = 0;
             while (d < len) : (d += 1) {
                 copied_data[d] = src_data_ptr[d];
             }
 
-            const frame_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+            // Create proper buffers holder for ArrowArray format
+            const buf_holder = scratch.claimBufHolder() orelse return ValuationError.AllocationFailed;
+            buf_holder[0] = 0;
+            buf_holder[1] = @intFromPtr(copied_data.ptr);
+
+            const frame_arr = scratch.claimArr() orelse return ValuationError.AllocationFailed;
             frame_arr.* = arrowAdapter.ArrowArray{
                 .length = len,
                 .null_count = 0,
                 .offset = 0,
                 .n_buffers = 1,
                 .n_children = 0,
-                .buffers = @ptrCast(&copied_data[0]),
+                .buffers = @ptrCast(buf_holder.ptr),
                 .children = null,
                 .dictionary = null,
                 .release = null,
                 .private_data = null,
             };
 
-            // Allocate buffers_holder in FBA
-            const bh = scratch.allocator().create([2]u64) catch return ValuationError.TypeMismatch;
-            bh[0] = 0;
-            bh[1] = @intFromPtr(copied_data.ptr);
-
-            if (!frame.put(name_idx, frame_arr, copied_data[0..@intCast(len)], bh.*[0..2])) {
+            if (!frame.put(name_idx, frame_arr, copied_data[0..@intCast(len)], buf_holder[0..2])) {
                 return ValuationError.TypeMismatch;
             }
             continue;
@@ -2283,22 +2291,22 @@ pub fn runValuation(
         // Multi-operand: execute the operation
         const op_name = string_table.get(entry.operation_idx) catch return ValuationError.RegistryError;
 
-        const compute_result = arrowAdapter.executeOperation(
+        // Pre-allocate output buffers
+        const out_data_len = operand_ptrs[0].*.length;
+        const out_data = scratch.claimData() orelse return ValuationError.AllocationFailed;
+        const out_buf_holder = scratch.claimBufHolder() orelse return ValuationError.AllocationFailed;
+        const out_arr_ptr = scratch.claimArr() orelse return ValuationError.AllocationFailed;
+
+        try arrowAdapter.executeOperation(
             op_name,
             operand_ptrs[0..operand_count],
-            alloc,
-        ) catch |err| {
-            switch (err) {
-                arrowAdapter.AdapterError.UndefinedOperation => return ValuationError.UndefinedOperation,
-                arrowAdapter.AdapterError.TypeMismatch => return ValuationError.TypeMismatch,
-                else => return ValuationError.TypeMismatch,
-            }
-        };
+            out_data[0..@intCast(out_data_len)],
+            out_arr_ptr,
+            out_buf_holder[0..2],
+        );
 
-        // Store result in frame: move ownership of ArrowArray struct and data.
-        const result_arr_ptr: *arrowAdapter.ArrowArray = @ptrCast(compute_result.output_array);
-
-        if (!frame.put(name_idx, result_arr_ptr, compute_result.data, compute_result.buffers_holder)) {
+        // Store result in frame
+        if (!frame.put(name_idx, out_arr_ptr, out_data[0..@intCast(out_data_len)], out_buf_holder[0..2])) {
             return ValuationError.TypeMismatch;
         }
     }
@@ -2313,83 +2321,68 @@ const FixedSource = struct {
 };
 
 /// Helper: build fixed-array source data from name/index pairs and f64 slices.
-fn buildFixedSources(
-    string_table: *const formula.StringTable,
+/// The scratch allocator (FBA) must come from a stack-allocated buffer so
+/// no heap is touched at any point.
+
+/// Build ArrowArrays and SourceData from data slices using a given allocator.
+fn buildSourceData(
     alloc: std.mem.Allocator,
+    string_table: *const formula.StringTable,
     names: []const []const u8,
     data_slices: []const []const f64,
-) !struct {
-    sources: []FixedSource,
-    names_buf: []usize,
-    arrs_buf: []const *arrowAdapter.ArrowArray,
+) ValuationError!struct {
+    fixed_sources: []FixedSource,
     source_data: SourceData,
-    scratch: *std.heap.FixedBufferAllocator,  // mutable for allocator()
-    buf_len: usize,  // length of the backing buffer for cleanup
+    names_buf: []usize,
+    arrs_typed: []*const arrowAdapter.ArrowArray,
 } {
-    const scratch = try alloc.create(std.heap.FixedBufferAllocator);
-    errdefer alloc.destroy(scratch);
-
-    var max_data_len: usize = 0;
-    var di: usize = 0;
-    while (di < data_slices.len) : (di += 1) {
-        if (data_slices[di].len > max_data_len) max_data_len = data_slices[di].len;
-    }
-
-    const total_data = max_data_len * 8; // u64 alignment, f64=8 bytes
-    const total_arr_size = data_slices.len * @sizeOf(arrowAdapter.ArrowArray);
-    const total_buf_holder = data_slices.len * 16; // [2]u64 = 16 bytes
-    const scratch_size = 256 + total_data + total_arr_size + total_buf_holder;
-    const buf = try alloc.alloc(u8, scratch_size);
-    errdefer alloc.free(buf);
-
-    scratch.* = std.heap.FixedBufferAllocator.init(buf);
-
-    // Create ArrowArrays in FBA
-    const arrs = scratch.allocator().alloc(*const arrowAdapter.ArrowArray, data_slices.len) catch return ValuationError.AllocationFailed;
-    const names_buf = scratch.allocator().alloc(usize, data_slices.len) catch return ValuationError.AllocationFailed;
-
+    const arrs = alloc.alloc(*arrowAdapter.ArrowArray, data_slices.len) catch return ValuationError.AllocationFailed;
+    const names_buf = alloc.alloc(usize, data_slices.len) catch return ValuationError.AllocationFailed;
     var si: usize = 0;
     while (si < data_slices.len) : (si += 1) {
-        const data_copy = scratch.allocator().alloc(f64, data_slices[si].len) catch return ValuationError.TypeMismatch;
-        var d: usize = 0;
-        while (d < data_slices[si].len) : (d += 1) {
-            data_copy[d] = data_slices[si][d];
-        }
-        const arr_ptr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+        const data_copy = alloc.dupe(f64, data_slices[si]) catch return ValuationError.AllocationFailed;
+        const arr_ptr = alloc.create(arrowAdapter.ArrowArray) catch return ValuationError.AllocationFailed;
+        const buffers_holder = alloc.alloc(u64, 2) catch return ValuationError.AllocationFailed;
+        buffers_holder[0] = 0;
+        buffers_holder[1] = @intFromPtr(data_copy.ptr);
         arr_ptr.* = arrowAdapter.ArrowArray{
             .length = @intCast(data_slices[si].len),
             .null_count = 0,
             .offset = 0,
             .n_buffers = 1,
             .n_children = 0,
-            .buffers = @ptrCast(&data_copy[0]),
+            .buffers = @ptrCast(buffers_holder.ptr),
             .children = null,
             .dictionary = null,
             .release = null,
             .private_data = null,
         };
         arrs[si] = arr_ptr;
-        const name_idx = string_table.lookupByName(names[si]) orelse break;
-        names_buf[si] = name_idx;
+        const lookup = string_table.lookupByName(names[si]) orelse return ValuationError.NotFound;
+        names_buf[si] = lookup;
         si += 1;
     }
 
-    const fixed_sources = try scratch.allocator().alloc(FixedSource, data_slices.len);
+    const fixed_sources = alloc.alloc(FixedSource, data_slices.len) catch return ValuationError.AllocationFailed;
     var fi: usize = 0;
     while (fi < data_slices.len) : (fi += 1) {
         fixed_sources[fi] = FixedSource{ .name_idx = names_buf[fi], .arr = arrs[fi] };
     }
 
+    const arrs_typed = alloc.alloc(*const arrowAdapter.ArrowArray, data_slices.len) catch return ValuationError.AllocationFailed;
+    var i: usize = 0;
+    while (i < data_slices.len) : (i += 1) {
+        arrs_typed[i] = arrs[i];
+    }
+
     return .{
-        .sources = fixed_sources[0..data_slices.len],
-        .names_buf = names_buf[0..data_slices.len],
-        .arrs_buf = @as([]const *arrowAdapter.ArrowArray, @ptrCast(arrs[0..data_slices.len])),
+        .fixed_sources = fixed_sources,
+        .names_buf = names_buf,
+        .arrs_typed = arrs_typed,
         .source_data = SourceData{
-            .sources = @as([]const *arrowAdapter.ArrowArray, @ptrCast(arrs[0..data_slices.len])),
+            .sources = arrs_typed,
             .source_names = names_buf[0..data_slices.len],
         },
-        .scratch = scratch,
-        .buf_len = buf.len,
     };
 }
 
@@ -2404,35 +2397,38 @@ fn expectApprox(a: []const f64, b: []const f64) !void {
 
 // 1. linear_chain_execution: B depends on source A (A→B), source data for A
 test "runValuation: linear_chain_execution A→B" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A", "A" }, "add");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{"A"},
         &.{ &[_]f64{ 1, 2, 3 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
-    runValuation(ValuationInput{
+    // Build ValuationScratch with pre-allocated output buffers
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
+
+    try runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch) catch |err| {
-        try expect(err == ValuationError.TypeMismatch);
-        return;
-    };
+    }, &frame, &vs);
 
     try expectEqual(1, frame.count());
     try expect(frame.getByName("B", string_table) != null);
@@ -2443,35 +2439,37 @@ test "runValuation: linear_chain_execution A→B" {
 
 // 2. single_formula_no_deps: one formula whose sources are all leaf metrics
 test "runValuation: single_formula_no_deps" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "X", &.{ "SA", "SB" }, "multiply");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{ "SA", "SB" },
         &.{ &[_]f64{ 1, 2, 3 }, &[_]f64{ 4, 5, 6 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
-    runValuation(ValuationInput{
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
+
+    try runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch) catch |err| {
-        try expect(err == ValuationError.TypeMismatch);
-        return;
-    };
+    }, &frame, &vs);
 
     try expectEqual(1, frame.count());
     if (frame.getByName("X", string_table)) |entry| {
@@ -2481,36 +2479,38 @@ test "runValuation: single_formula_no_deps" {
 
 // 3. independent_formulas: two formulas, no deps between them
 test "runValuation: independent_formulas" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "X", &.{ "XA", "XB" }, "add");
     _ = try addFormulaAndGetIndex(&registry, string_table, "Y", &.{ "YA", "YB" }, "add");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{ "XA", "XB", "YA", "YB" },
         &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 }, &[_]f64{ 10, 20 }, &[_]f64{ 5, 4 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
-    runValuation(ValuationInput{
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
+
+    try runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch) catch |err| {
-        try expect(err == ValuationError.TypeMismatch);
-        return;
-    };
+    }, &frame, &vs);
 
     try expectEqual(2, frame.count());
     if (frame.getByName("X", string_table)) |entry| {
@@ -2523,19 +2523,22 @@ test "runValuation: independent_formulas" {
 
 // 4. type_mismatch_error: non-float64 source array (null buffers)
 test "runValuation: type_mismatch_error" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
-    const string_table = &reg.string_table;
+    const st_ptr = &reg.string_table;
+    var string_table: *formula.StringTable = @constCast(st_ptr);
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "BAD", "X" }, "add");
 
-    // Create null-buffer ArrowArray for BAD
-    const buf = try alloc.alloc(u8, 128);
-    defer alloc.free(buf);
-    var scratch = std.heap.FixedBufferAllocator.init(buf);
-    const bad_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+    const bad_idx = string_table.intern("BAD") catch unreachable;
+    const x_idx = string_table.intern("X") catch unreachable;
+
+    const bad_arr = try alloc.create(arrowAdapter.ArrowArray);
     bad_arr.* = arrowAdapter.ArrowArray{
         .length = 3,
         .null_count = 0,
@@ -2549,11 +2552,8 @@ test "runValuation: type_mismatch_error" {
         .private_data = null,
     };
 
-    // Source data for X
-    const x_data = scratch.allocator().alloc(f64, 2) catch return ValuationError.TypeMismatch;
-    x_data[0] = 1;
-    x_data[1] = 2;
-    const x_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
+    const x_data = try alloc.dupe(f64, &[_]f64{ 1, 2 });
+    const x_arr = try alloc.create(arrowAdapter.ArrowArray);
     x_arr.* = arrowAdapter.ArrowArray{
         .length = 2,
         .null_count = 0,
@@ -2567,68 +2567,75 @@ test "runValuation: type_mismatch_error" {
         .private_data = null,
     };
 
-    const src_names = scratch.allocator().alloc(usize, 2) catch return ValuationError.AllocationFailed;
-    src_names[0] = string_table.lookupByName("BAD") orelse unreachable;
-    src_names[1] = string_table.lookupByName("X") orelse unreachable;
+    const src_names = try alloc.alloc(usize, 2);
+    src_names[0] = bad_idx;
+    src_names[1] = x_idx;
 
-    const src_arrs = try scratch.allocator().alloc(*const arrowAdapter.ArrowArray, 2);
+    const src_arrs = try alloc.alloc(*const arrowAdapter.ArrowArray, 2);
     src_arrs[0] = bad_arr;
     src_arrs[1] = x_arr;
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
     const sd: SourceData = .{
-        .sources = @as([]const *arrowAdapter.ArrowArray, @ptrCast(src_arrs[0..2])),
+        .sources = src_arrs[0..2],
         .source_names = src_names[0..2],
     };
     const result = runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sd,
-    }, &frame, &scratch);
+    }, &frame, undefined);
 
     try expect(result == ValuationError.TypeMismatch);
 }
 
 // 5. undefined_operation_error: formula with unknown operation
 test "runValuation: undefined_operation_error" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "Z", &.{ "A", "B" }, "foobar");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{ "A", "B" },
         &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
+
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
 
     const result = runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch);
+    }, &frame, &vs);
 
     try expect(result == ValuationError.UndefinedOperation);
 }
 
 // 6. diamond_execution: A→B, A→C, B→D, C→D
 test "runValuation: diamond_execution" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -2636,27 +2643,26 @@ test "runValuation: diamond_execution" {
     _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{ "A", "A" }, "multiply");
     _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "B", "C" }, "subtract");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{"A"},
         &.{ &[_]f64{ 2, 3 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
-    runValuation(ValuationInput{
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
+
+    try runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch) catch |err| {
-        try expect(err == ValuationError.TypeMismatch);
-        return;
-    };
+    }, &frame, &vs);
 
     try expectEqual(3, frame.count());
     if (frame.getByName("B", string_table)) |entry| {
@@ -2672,35 +2678,37 @@ test "runValuation: diamond_execution" {
 
 // 7. partial_dependency_resolution: B depends on A, A is source data
 test "runValuation: partial_dependency_resolution" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A", "A" }, "multiply");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{"A"},
         &.{ &[_]f64{ 5, 10 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
-    runValuation(ValuationInput{
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
+
+    try runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch) catch |err| {
-        try expect(err == ValuationError.TypeMismatch);
-        return;
-    };
+    }, &frame, &vs);
 
     if (frame.getByName("B", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 25, 100 });
@@ -2709,35 +2717,37 @@ test "runValuation: partial_dependency_resolution" {
 
 // 8. multiple_sources_for_one_formula: C depends on A and B (both sources)
 test "runValuation: multiple_sources_for_one_formula" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{ "A", "B" }, "divide");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{ "A", "B" },
         &.{ &[_]f64{ 10, 20 }, &[_]f64{ 2, 4 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
-    runValuation(ValuationInput{
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
+
+    try runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch) catch |err| {
-        try expect(err == ValuationError.TypeMismatch);
-        return;
-    };
+    }, &frame, &vs);
 
     if (frame.getByName("C", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 5, 5 });
@@ -2746,41 +2756,49 @@ test "runValuation: multiple_sources_for_one_formula" {
 
 // 9. fail_closed_on_error: one formula has undefined op → entire run fails
 test "runValuation: fail_closed_on_error" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "Z", &.{ "X", "Y" }, "foobar");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{ "X", "Y" },
         &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
+
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
 
     const result = runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch);
+    }, &frame, &vs);
 
     try expect(result == ValuationError.UndefinedOperation);
 }
 
 // 10. complex_chain: 5-formula chain ROIC→STLA→EV→EBITDA→EV_EBITDA
 test "runValuation: complex_chain" {
-    const alloc = std.testing.allocator;
+    var scratch: [8192]u8 = undefined;
+    var src_fba = std.heap.FixedBufferAllocator.init(&scratch);
+    const alloc = src_fba.allocator();
 
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -2790,27 +2808,26 @@ test "runValuation: complex_chain" {
     _ = try addFormulaAndGetIndex(&registry, string_table, "EBITDA", &.{ "EV", "D" }, "subtract");
     _ = try addFormulaAndGetIndex(&registry, string_table, "EV_EBITDA", &.{ "EBITDA", "EV" }, "divide");
 
-    var sources = try buildFixedSources(string_table, alloc,
+    var sources = try buildSourceData(alloc, string_table,
         &.{ "R", "I", "ONE", "M", "D" },
         &.{ &[_]f64{ 100, 200 }, &[_]f64{ 10, 20 }, &[_]f64{ 1, 1 }, &[_]f64{ 5, 5 }, &[_]f64{ 2, 2 } },
     );
-    defer {
-        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
-        alloc.destroy(sources.scratch);
-    }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
-    runValuation(ValuationInput{
+    const max_results = 16;
+    var scratch_arrs = try alloc.alloc(arrowAdapter.ArrowArray, max_results);
+    const scratch_data = try alloc.alloc([]f64, max_results);
+    const scratch_bufs = try alloc.alloc([]u64, max_results);
+    var vs: ValuationScratch = undefined;
+    vs.init(scratch_arrs[0..], scratch_data, scratch_bufs);
+
+    try runValuation(ValuationInput{
         .registry = &registry,
         .source_data = &sources.source_data,
-    }, &frame, sources.scratch) catch |err| {
-        try expect(err == ValuationError.TypeMismatch);
-        return;
-    };
+    }, &frame, &vs);
 
     try expectEqual(5, frame.count());
     if (frame.getByName("ROIC", string_table)) |entry| {
@@ -2829,6 +2846,7 @@ test "runValuation: complex_chain" {
         try expectApprox(entry.data, &[_]f64{ 0.9608, 0.9608 });
     }
 }
+
 
 // ─── V1.1.S7: Provenance — Audit Trail for Every Computed Metric ────────
 
@@ -3085,7 +3103,8 @@ pub fn provenanceFree(prov: *Provenance) void {
 
 test "provenance: single_formula_provenance ROIC = NOPAT / InvestedCapital" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -3105,7 +3124,8 @@ test "provenance: single_formula_provenance ROIC = NOPAT / InvestedCapital" {
 
 test "provenance: chain_provenance A→B→C" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -3125,7 +3145,8 @@ test "provenance: chain_provenance A→B→C" {
 
 test "provenance: leaf_metric_provenance Revenue (no sources)" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -3142,7 +3163,8 @@ test "provenance: leaf_metric_provenance Revenue (no sources)" {
 
 test "provenance: diamond_provenance A→B, A→C, B→D, C→D" {
     const alloc = std.testing.allocator;
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -3167,7 +3189,8 @@ test "provenance: diamond_provenance A→B, A→C, B→D, C→D" {
 
 test "provenance: re_evaluation_invariance" {
     const alloc = std.testing.allocator;
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -3193,7 +3216,8 @@ test "provenance: re_evaluation_invariance" {
 
 test "provenance: complex_chain_provenance ROIC→STLA→EV→EBITDA→EV_EBITDA" {
     const alloc = std.testing.allocator;
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -3214,7 +3238,8 @@ test "provenance: complex_chain_provenance ROIC→STLA→EV→EBITDA→EV_EBITDA
 
 test "provenance: query_provenance_by_name" {
     const alloc = std.testing.allocator;
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
@@ -3257,18 +3282,22 @@ test "provenance: query_nonexistent_provenance" {
 
 test "provenance: all_provenance_built" {
     const alloc = std.testing.allocator;
-    var reg = makeRegistry();
+    var reg: FormulaRegistryFixture = undefined;
+    makeRegistry(&reg);
     var registry = reg.registry;
     const string_table = &reg.string_table;
 
 
     _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "add");
-    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A" }, "divide");
+
+    // Intern "C" so it exists in the string table
+    _ = try string_table.intern("C");
+
     // Create a minimal frame with 3 entries (A, B, C)
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
-    defer alloc.free(frame_buf);
 
     // Populate frame with mock result data for A, B, C
     const a_data = try alloc.alloc(f64, 1);
