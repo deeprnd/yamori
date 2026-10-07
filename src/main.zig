@@ -813,7 +813,7 @@ fn checkCycle(registry: *formula.FormulaRegistry, string_table: *formula.StringT
 }
 
 /// Helper: add a formula and return its formula index (position in formulas array).
-fn addFormulaAndGetIndex(registry: *formula.FormulaRegistry, string_table: *formula.StringTable, name: []const u8, sources: []const []const u8, operation: []const u8) formula.RegistryError!usize {
+fn addFormulaAndGetIndex(registry: *formula.FormulaRegistry, string_table: *const formula.StringTable, name: []const u8, sources: []const []const u8, operation: []const u8) formula.RegistryError!usize {
     _ = string_table;
     // Use registry.string_table for interning so attachProvenance can find the strings.
     // The string_table parameter is kept for API compatibility but registry.string_table
@@ -838,7 +838,7 @@ fn addFormulaAndGetIndex(registry: *formula.FormulaRegistry, string_table: *form
 
 /// Helper: resolve dependencies, fill order_buf, and look up names from string table.
 /// Returns ordered count (0 = cycle). Fills out_names with string slices.
-fn resolveAndGetName(registry: *const formula.FormulaRegistry, string_table: *formula.StringTable, order_buf: [*]usize, order_capacity: usize, out_names: [][]const u8) usize {
+fn resolveAndGetName(registry: *const formula.FormulaRegistry, string_table: *const formula.StringTable, order_buf: [*]usize, order_capacity: usize, out_names: [][]const u8) usize {
     _ = string_table;
     var in_deg_buf: [formula.MaxFormulas]usize = undefined;
     var queue_buf: [formula.MaxFormulas]usize = undefined;
@@ -1188,16 +1188,16 @@ test "GSL and Arrow capabilities coexist in CapabilityRegistry" {
 test "linear_chain: A→B→C produces [A, B, C]" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
     const empty_sources: []const []const u8 = &.{};
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", empty_sources, "dummy");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &[_][]const u8{"A"}, "dummy");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &[_][]const u8{"B"}, "dummy");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", empty_sources, "dummy");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &[_][]const u8{"A"}, "dummy");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &[_][]const u8{"B"}, "dummy");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(3, count);
     try expectEqualStrings("A", out_names[0]);
@@ -1208,16 +1208,16 @@ test "linear_chain: A→B→C produces [A, B, C]" {
 test "independent_formulas: X,Y,Z no deps → [X, Y, Z] lex order" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
     const empty_sources: []const []const u8 = &.{};
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "X", empty_sources, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Y", empty_sources, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Z", empty_sources, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "X", empty_sources, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Y", empty_sources, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Z", empty_sources, "d");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(3, count);
     try expectEqualStrings("X", out_names[0]);
@@ -1228,16 +1228,16 @@ test "independent_formulas: X,Y,Z no deps → [X, Y, Z] lex order" {
 test "diamond_dependency: A→B, A→C, B→D, C→D" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "B", "C" }, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "B", "C" }, "d");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(4, count);
     try expectEqualStrings("A", out_names[0]);
@@ -1266,11 +1266,11 @@ test "diamond_dependency: A→B, A→C, B→D, C→D" {
 test "empty_registry returns empty slice" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(0, count);
 }
@@ -1278,13 +1278,13 @@ test "empty_registry returns empty slice" {
 test "single_formula returns [formula_name]" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Single", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Single", &.{}, "d");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(1, count);
     try expectEqualStrings("Single", out_names[0]);
@@ -1293,16 +1293,16 @@ test "single_formula returns [formula_name]" {
 test "multiple_chains_parallel: A→B and X→Y" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "X", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Y", &.{"X"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "X", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Y", &.{"X"}, "d");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(4, count);
 
@@ -1331,17 +1331,17 @@ test "multiple_chains_parallel: A→B and X→Y" {
 test "complex_diamond: A→B, A→C, B→D, C→D, D→E" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "B", "C" }, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "E", &.{"D"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "B", "C" }, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "E", &.{"D"}, "d");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(5, count);
     try expectEqualStrings("A", out_names[0]);
@@ -1367,15 +1367,15 @@ test "complex_diamond: A→B, A→C, B→D, C→D, D→E" {
 test "self_contained_chain: ROIC→STLA→EV_EBITDA" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "ROIC", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "STLA", &.{"ROIC"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "EV_EBITDA", &.{"STLA"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "ROIC", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "STLA", &.{"ROIC"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "EV_EBITDA", &.{"STLA"}, "d");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(3, count);
     try expectEqualStrings("ROIC", out_names[0]);
@@ -1386,14 +1386,14 @@ test "self_contained_chain: ROIC→STLA→EV_EBITDA" {
 test "lexicographic_tiebreaking: Beta and WACC" {
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Beta", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "WACC", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Beta", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "WACC", &.{}, "d");
 
     var order_buf: [formula.MaxFormulas]usize = undefined;
     var out_names: [formula.MaxFormulas][]const u8 = undefined;
-    const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+    const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
     try expectEqual(2, count);
     try expectEqualStrings("Beta", out_names[0]);
@@ -1407,17 +1407,17 @@ test "determinism: same input 10 times produces identical output" {
     while (i < 10) : (i += 1) {
         const reg = makeRegistry();
         var registry = reg.registry;
-        var string_table = reg.string_table;
+        const string_table = &reg.string_table;
 
-        _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-        _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
-        _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{"A"}, "d");
-        _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "B", "C" }, "d");
-        _ = try addFormulaAndGetIndex(&registry, &string_table, "E", &.{"D"}, "d");
+        _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+        _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
+        _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{"A"}, "d");
+        _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "B", "C" }, "d");
+        _ = try addFormulaAndGetIndex(&registry, string_table, "E", &.{"D"}, "d");
 
         var order_buf: [formula.MaxFormulas]usize = undefined;
         var out_names: [formula.MaxFormulas][]const u8 = undefined;
-        const count = resolveAndGetName(&registry, &string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
+        const count = resolveAndGetName(&registry, string_table, &order_buf, formula.MaxFormulas, out_names[0..]);
 
         try expectEqual(expected_names.len, count);
         for (expected_names, 0..) |exp, idx| {
@@ -1457,12 +1457,12 @@ fn detectCycleIndex(
 }
 
 test "simple_cycle: A→B, B→A detects cycle" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "dummy");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "dummy");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "dummy");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "dummy");
 
     // Adding a formula named "B" (replacing existing B) with source "A" → no cycle (A has no deps)
     // But adding B→A where A already exists is fine. The cycle would be A→B→A.
@@ -1473,106 +1473,106 @@ test "simple_cycle: A→B, B→A detects cycle" {
     const new_name_idx = try string_table.intern("A");
     // A has no sources, so B→A→(nothing) has no cycle.
     // The cycle detection tests that A_new depending on B doesn't create a cycle.
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{});
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{});
 }
 
 test "longer_cycle: A→B→C→A detects cycle" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{"B"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{"B"}, "d");
 
     // A has no sources. Adding A_new depending on C: C→B→A→(nothing) — no cycle.
     const new_name_idx = try string_table.intern("A_new");
     const c_name_idx = try string_table.intern("C");
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{c_name_idx});
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{c_name_idx});
 }
 
 test "self_reference: A→A detects cycle" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "dummy");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "dummy");
 
     // A has no sources. Adding A_self depending on A — no cycle.
     const new_name_idx = try string_table.intern("A_self");
     const a_name_idx = try string_table.intern("A");
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{a_name_idx});
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{a_name_idx});
 }
 
 test "no_cycle_linear: A→B→C succeeds" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
 
     // C depending on B should NOT create a cycle
     const new_name_idx = try string_table.intern("C_new");
     const b_name_idx = try string_table.intern("B");
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{b_name_idx});
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{b_name_idx});
 }
 
 test "no_cycle_diamond: A→B, A→C, B→D, C→D succeeds" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{"A"}, "d");
 
     const new_name_idx = try string_table.intern("D_new");
     const b_name_idx = try string_table.intern("B");
     const c_name_idx = try string_table.intern("C");
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{ b_name_idx, c_name_idx });
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{ b_name_idx, c_name_idx });
 }
 
 test "undefined_reference_no_cycle: Ghost ref doesn't trigger cycle" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "X", &.{"Ghost"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "X", &.{"Ghost"}, "d");
 
     // Ghost is not in registry, so it's skipped in DFS
     const new_name_idx = try string_table.intern("Y_new");
     const ghost_idx = try string_table.intern("Ghost");
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{ghost_idx});
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{ghost_idx});
 }
 
 test "cycle_through_undefined: partial graph then close cycle" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{"B"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{"B"}, "d");
 
     // A depends on B (undefined as formula). B_new depending on A has no cycle.
     const new_name_idx = try string_table.intern("B_new");
     const a_idx = try string_table.intern("A");
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{a_idx});
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{a_idx});
 }
 
 test "multiple_cycles_detects_one: two separate cycles" {
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    var string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{}, "d");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{"C"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{}, "d");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{"C"}, "d");
 
     // A has no sources. A_new depending on B: B→A→(nothing) — no cycle.
     const new_name_idx = try string_table.intern("A_new");
     const b_idx = try string_table.intern("B");
-    try detectCycleIndex(&registry, &string_table, new_name_idx, &.{b_idx});
+    try detectCycleIndex(&registry, string_table, new_name_idx, &.{b_idx});
 }
 
 // ─── Arrow Adapter Tests ────────────────────────────────────────────────
@@ -2147,6 +2147,7 @@ pub const ValuationError = error{
     ResolveError,
     ArrowError,
     NotFound,
+    AllocationFailed,
 };
 
 /// resultFrameFree is a no-op — ResultFrame uses fixed arrays with no heap ownership.
@@ -2225,7 +2226,7 @@ pub fn runValuation(
                 };
 
                 operand_ptrs[operand_count] = frame_arr;
-                operand_data[operand_count] = copied_data[0..len];
+                operand_data[operand_count] = copied_data[0..@intCast(len)];
                 operand_count += 1;
             } else if (frame.get(name_idx)) |cached| {
                 // Source is a previously computed result — use directly
@@ -2268,10 +2269,10 @@ pub fn runValuation(
 
             // Allocate buffers_holder in FBA
             const bh = scratch.allocator().create([2]u64) catch return ValuationError.TypeMismatch;
-            bh[0][0] = 0;
-            bh[0][1] = @intFromPtr(copied_data.ptr);
+            bh[0] = 0;
+            bh[1] = @intFromPtr(copied_data.ptr);
 
-            if (!frame.put(name_idx, frame_arr, copied_data[0..len], bh[0][0..2])) {
+            if (!frame.put(name_idx, frame_arr, copied_data[0..@intCast(len)], bh.*[0..2])) {
                 return ValuationError.TypeMismatch;
             }
             continue;
@@ -2313,7 +2314,7 @@ const FixedSource = struct {
 
 /// Helper: build fixed-array source data from name/index pairs and f64 slices.
 fn buildFixedSources(
-    string_table: *formula.StringTable,
+    string_table: *const formula.StringTable,
     alloc: std.mem.Allocator,
     names: []const []const u8,
     data_slices: []const []const f64,
@@ -2323,6 +2324,7 @@ fn buildFixedSources(
     arrs_buf: []const *arrowAdapter.ArrowArray,
     source_data: SourceData,
     scratch: *std.heap.FixedBufferAllocator,  // mutable for allocator()
+    buf_len: usize,  // length of the backing buffer for cleanup
 } {
     const scratch = try alloc.create(std.heap.FixedBufferAllocator);
     errdefer alloc.destroy(scratch);
@@ -2343,8 +2345,8 @@ fn buildFixedSources(
     scratch.* = std.heap.FixedBufferAllocator.init(buf);
 
     // Create ArrowArrays in FBA
-    const arrs = try scratch.allocator().alloc(*const arrowAdapter.ArrowArray, data_slices.len) catch null;
-    const names_buf = try scratch.allocator().alloc(usize, data_slices.len) catch null;
+    const arrs = scratch.allocator().alloc(*const arrowAdapter.ArrowArray, data_slices.len) catch return ValuationError.AllocationFailed;
+    const names_buf = scratch.allocator().alloc(usize, data_slices.len) catch return ValuationError.AllocationFailed;
 
     var si: usize = 0;
     while (si < data_slices.len) : (si += 1) {
@@ -2367,12 +2369,12 @@ fn buildFixedSources(
             .private_data = null,
         };
         arrs[si] = arr_ptr;
-        const name_idx = string_table.get(names[si]) catch break;
+        const name_idx = string_table.lookupByName(names[si]) orelse break;
         names_buf[si] = name_idx;
         si += 1;
     }
 
-    const fixed_sources = try scratch.allocator().alloc(FixedSource, data_slices.len) catch null;
+    const fixed_sources = try scratch.allocator().alloc(FixedSource, data_slices.len);
     var fi: usize = 0;
     while (fi < data_slices.len) : (fi += 1) {
         fixed_sources[fi] = FixedSource{ .name_idx = names_buf[fi], .arr = arrs[fi] };
@@ -2381,12 +2383,13 @@ fn buildFixedSources(
     return .{
         .sources = fixed_sources[0..data_slices.len],
         .names_buf = names_buf[0..data_slices.len],
-        .arrs_buf = arrs[0..data_slices.len],
+        .arrs_buf = @as([]const *arrowAdapter.ArrowArray, @ptrCast(arrs[0..data_slices.len])),
         .source_data = SourceData{
-            .sources = arrs[0..data_slices.len],
+            .sources = @as([]const *arrowAdapter.ArrowArray, @ptrCast(arrs[0..data_slices.len])),
             .source_names = names_buf[0..data_slices.len],
         },
         .scratch = scratch,
+        .buf_len = buf.len,
     };
 }
 
@@ -2405,35 +2408,35 @@ test "runValuation: linear_chain_execution A→B" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A", "A" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A", "A" }, "add");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{"A"},
         &.{ &[_]f64{ 1, 2, 3 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch) catch |err| {
         try expect(err == ValuationError.TypeMismatch);
         return;
     };
 
     try expectEqual(1, frame.count());
-    try expect(frame.getByName("B", &string_table) != null);
-    if (frame.getByName("B", &string_table)) |entry| {
+    try expect(frame.getByName("B", string_table) != null);
+    if (frame.getByName("B", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 2, 4, 6 });
     }
 }
@@ -2444,34 +2447,34 @@ test "runValuation: single_formula_no_deps" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "X", &.{ "SA", "SB" }, "multiply");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "X", &.{ "SA", "SB" }, "multiply");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{ "SA", "SB" },
         &.{ &[_]f64{ 1, 2, 3 }, &[_]f64{ 4, 5, 6 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch) catch |err| {
         try expect(err == ValuationError.TypeMismatch);
         return;
     };
 
     try expectEqual(1, frame.count());
-    if (frame.getByName("X", &string_table)) |entry| {
+    if (frame.getByName("X", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 4, 10, 18 });
     }
 }
@@ -2482,38 +2485,38 @@ test "runValuation: independent_formulas" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "X", &.{ "XA", "XB" }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Y", &.{ "YA", "YB" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "X", &.{ "XA", "XB" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Y", &.{ "YA", "YB" }, "add");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{ "XA", "XB", "YA", "YB" },
         &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 }, &[_]f64{ 10, 20 }, &[_]f64{ 5, 4 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch) catch |err| {
         try expect(err == ValuationError.TypeMismatch);
         return;
     };
 
     try expectEqual(2, frame.count());
-    if (frame.getByName("X", &string_table)) |entry| {
+    if (frame.getByName("X", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 4, 6 });
     }
-    if (frame.getByName("Y", &string_table)) |entry| {
+    if (frame.getByName("Y", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 15, 24 });
     }
 }
@@ -2524,14 +2527,14 @@ test "runValuation: type_mismatch_error" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "BAD", "X" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "BAD", "X" }, "add");
 
     // Create null-buffer ArrowArray for BAD
     const buf = try alloc.alloc(u8, 128);
     defer alloc.free(buf);
-    const scratch = std.heap.FixedBufferAllocator.init(buf);
+    var scratch = std.heap.FixedBufferAllocator.init(buf);
     const bad_arr = scratch.allocator().create(arrowAdapter.ArrowArray) catch return ValuationError.TypeMismatch;
     bad_arr.* = arrowAdapter.ArrowArray{
         .length = 3,
@@ -2564,25 +2567,26 @@ test "runValuation: type_mismatch_error" {
         .private_data = null,
     };
 
-    const src_names = try scratch.allocator().alloc(usize, 2) catch null;
-    src_names[0] = string_table.get("BAD").?;
-    src_names[1] = string_table.get("X").?;
+    const src_names = scratch.allocator().alloc(usize, 2) catch return ValuationError.AllocationFailed;
+    src_names[0] = string_table.lookupByName("BAD") orelse unreachable;
+    src_names[1] = string_table.lookupByName("X") orelse unreachable;
 
-    const src_arrs = try scratch.allocator().alloc(*const arrowAdapter.ArrowArray, 2) catch null;
+    const src_arrs = try scratch.allocator().alloc(*const arrowAdapter.ArrowArray, 2);
     src_arrs[0] = bad_arr;
     src_arrs[1] = x_arr;
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
+    const sd: SourceData = .{
+        .sources = @as([]const *arrowAdapter.ArrowArray, @ptrCast(src_arrs[0..2])),
+        .source_names = src_names[0..2],
+    };
     const result = runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = SourceData{
-            .sources = src_arrs[0..2],
-            .source_names = src_names[0..2],
-        },
+        .source_data = &sd,
     }, &frame, &scratch);
 
     try expect(result == ValuationError.TypeMismatch);
@@ -2594,27 +2598,27 @@ test "runValuation: undefined_operation_error" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Z", &.{ "A", "B" }, "foobar");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Z", &.{ "A", "B" }, "foobar");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{ "A", "B" },
         &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     const result = runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch);
 
     try expect(result == ValuationError.UndefinedOperation);
@@ -2626,42 +2630,42 @@ test "runValuation: diamond_execution" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A", "A" }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{ "A", "A" }, "multiply");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "B", "C" }, "subtract");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A", "A" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{ "A", "A" }, "multiply");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "B", "C" }, "subtract");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{"A"},
         &.{ &[_]f64{ 2, 3 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch) catch |err| {
         try expect(err == ValuationError.TypeMismatch);
         return;
     };
 
     try expectEqual(3, frame.count());
-    if (frame.getByName("B", &string_table)) |entry| {
+    if (frame.getByName("B", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 4, 6 });
     }
-    if (frame.getByName("C", &string_table)) |entry| {
+    if (frame.getByName("C", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 4, 9 });
     }
-    if (frame.getByName("D", &string_table)) |entry| {
+    if (frame.getByName("D", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 0, -3 });
     }
 }
@@ -2672,33 +2676,33 @@ test "runValuation: partial_dependency_resolution" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A", "A" }, "multiply");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A", "A" }, "multiply");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{"A"},
         &.{ &[_]f64{ 5, 10 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch) catch |err| {
         try expect(err == ValuationError.TypeMismatch);
         return;
     };
 
-    if (frame.getByName("B", &string_table)) |entry| {
+    if (frame.getByName("B", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 25, 100 });
     }
 }
@@ -2709,33 +2713,33 @@ test "runValuation: multiple_sources_for_one_formula" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{ "A", "B" }, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{ "A", "B" }, "divide");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{ "A", "B" },
         &.{ &[_]f64{ 10, 20 }, &[_]f64{ 2, 4 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch) catch |err| {
         try expect(err == ValuationError.TypeMismatch);
         return;
     };
 
-    if (frame.getByName("C", &string_table)) |entry| {
+    if (frame.getByName("C", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 5, 5 });
     }
 }
@@ -2746,27 +2750,27 @@ test "runValuation: fail_closed_on_error" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Z", &.{ "X", "Y" }, "foobar");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Z", &.{ "X", "Y" }, "foobar");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{ "X", "Y" },
         &.{ &[_]f64{ 1, 2 }, &[_]f64{ 3, 4 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     const result = runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch);
 
     try expect(result == ValuationError.UndefinedOperation);
@@ -2778,50 +2782,50 @@ test "runValuation: complex_chain" {
 
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "ROIC", &.{ "R", "I" }, "divide");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "STLA", &.{ "ROIC", "M" }, "multiply");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "EV", &.{ "STLA", "ONE" }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "EBITDA", &.{ "EV", "D" }, "subtract");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "EV_EBITDA", &.{ "EBITDA", "EV" }, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "ROIC", &.{ "R", "I" }, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "STLA", &.{ "ROIC", "M" }, "multiply");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "EV", &.{ "STLA", "ONE" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "EBITDA", &.{ "EV", "D" }, "subtract");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "EV_EBITDA", &.{ "EBITDA", "EV" }, "divide");
 
-    var sources = try buildFixedSources(&string_table, alloc,
+    var sources = try buildFixedSources(string_table, alloc,
         &.{ "R", "I", "ONE", "M", "D" },
         &.{ &[_]f64{ 100, 200 }, &[_]f64{ 10, 20 }, &[_]f64{ 1, 1 }, &[_]f64{ 5, 5 }, &[_]f64{ 2, 2 } },
     );
     defer {
-        alloc.free(sources.scratch.buffer[0..sources.scratch.size]);
+        alloc.free(sources.scratch.buffer[0..sources.buf_len]);
         alloc.destroy(sources.scratch);
     }
 
     const frame_buf = try alloc.alloc(ResultEntry, 64);
-    const frame = undefined;
+    var frame: ResultFrame = undefined;
     ResultFrame.init(&frame, frame_buf);
     defer alloc.free(frame_buf);
 
     runValuation(ValuationInput{
         .registry = &registry,
-        .source_data = sources.source_data,
+        .source_data = &sources.source_data,
     }, &frame, sources.scratch) catch |err| {
         try expect(err == ValuationError.TypeMismatch);
         return;
     };
 
     try expectEqual(5, frame.count());
-    if (frame.getByName("ROIC", &string_table)) |entry| {
+    if (frame.getByName("ROIC", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 10, 10 });
     }
-    if (frame.getByName("STLA", &string_table)) |entry| {
+    if (frame.getByName("STLA", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 50, 50 });
     }
-    if (frame.getByName("EV", &string_table)) |entry| {
+    if (frame.getByName("EV", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 51, 51 });
     }
-    if (frame.getByName("EBITDA", &string_table)) |entry| {
+    if (frame.getByName("EBITDA", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 49, 49 });
     }
-    if (frame.getByName("EV_EBITDA", &string_table)) |entry| {
+    if (frame.getByName("EV_EBITDA", string_table)) |entry| {
         try expectApprox(entry.data, &[_]f64{ 0.9608, 0.9608 });
     }
 }
@@ -3083,10 +3087,10 @@ test "provenance: single_formula_provenance ROIC = NOPAT / InvestedCapital" {
     const alloc = std.testing.allocator;
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "ROIC", &.{ "NOPAT", "InvestedCapital" }, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "ROIC", &.{ "NOPAT", "InvestedCapital" }, "divide");
     var prov = try attachProvenance("ROIC", &registry, alloc);
     defer prov.deinit();
 
@@ -3103,12 +3107,12 @@ test "provenance: chain_provenance A→B→C" {
     const alloc = std.testing.allocator;
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{  }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A" }, "multiply");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{ "B" }, "multiply");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{  }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A" }, "multiply");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{ "B" }, "multiply");
     var prov = try attachProvenance("C", &registry, alloc);
     defer prov.deinit();
 
@@ -3123,10 +3127,10 @@ test "provenance: leaf_metric_provenance Revenue (no sources)" {
     const alloc = std.testing.allocator;
     const reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Revenue", &.{  }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Revenue", &.{  }, "add");
     var prov = try attachProvenance("Revenue", &registry, alloc);
     defer prov.deinit();
 
@@ -3138,15 +3142,15 @@ test "provenance: leaf_metric_provenance Revenue (no sources)" {
 
 test "provenance: diamond_provenance A→B, A→C, B→D, C→D" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{  }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A" }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "C", &.{ "A" }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "D", &.{ "B", "C" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{  }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "C", &.{ "A" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "D", &.{ "B", "C" }, "add");
 
     var prov = try attachProvenance("D", &registry, alloc);
     defer prov.deinit();
@@ -3163,13 +3167,13 @@ test "provenance: diamond_provenance A→B, A→C, B→D, C→D" {
 
 test "provenance: re_evaluation_invariance" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{  }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{ "A" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{  }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{ "A" }, "add");
 
     var prov1 = try attachProvenance("B", &registry, alloc);
     defer prov1.deinit();
@@ -3189,16 +3193,16 @@ test "provenance: re_evaluation_invariance" {
 
 test "provenance: complex_chain_provenance ROIC→STLA→EV→EBITDA→EV_EBITDA" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "ROIC", &.{ "R", "I" }, "divide");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "STLA", &.{ "ROIC", "M" }, "multiply");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "EV", &.{ "STLA", "ONE" }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "EBITDA", &.{ "EV", "D" }, "subtract");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "EV_EBITDA", &.{ "EBITDA", "EV" }, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "ROIC", &.{ "R", "I" }, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "STLA", &.{ "ROIC", "M" }, "multiply");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "EV", &.{ "STLA", "ONE" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "EBITDA", &.{ "EV", "D" }, "subtract");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "EV_EBITDA", &.{ "EBITDA", "EV" }, "divide");
     var prov = try attachProvenance("EV_EBITDA", &registry, alloc);
     defer prov.deinit();
 
@@ -3210,13 +3214,13 @@ test "provenance: complex_chain_provenance ROIC→STLA→EV→EBITDA→EV_EBITDA
 
 test "provenance: query_provenance_by_name" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "X", &.{ "A", "B" }, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "Y", &.{  }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "X", &.{ "A", "B" }, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "Y", &.{  }, "add");
 
     var provenance_map = std.StringHashMap(Provenance).init(alloc);
 
@@ -3253,13 +3257,13 @@ test "provenance: query_nonexistent_provenance" {
 
 test "provenance: all_provenance_built" {
     const alloc = std.testing.allocator;
-    const reg = makeRegistry();
+    var reg = makeRegistry();
     var registry = reg.registry;
-    var string_table = reg.string_table;
+    const string_table = &reg.string_table;
 
 
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "A", &.{}, "add");
-    _ = try addFormulaAndGetIndex(&registry, &string_table, "B", &.{"A"}, "divide");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "A", &.{}, "add");
+    _ = try addFormulaAndGetIndex(&registry, string_table, "B", &.{"A"}, "divide");
     // Create a minimal frame with 3 entries (A, B, C)
     const frame_buf = try alloc.alloc(ResultEntry, 64);
     var frame: ResultFrame = undefined;
@@ -3285,7 +3289,7 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    const a_name_idx = string_table.get("A").?;
+    const a_name_idx = string_table.lookupByName("A") orelse unreachable;
     _ = frame.put(a_name_idx, a_arr, a_data, a_buffers[0..2]);
 
     const b_data = try alloc.alloc(f64, 1);
@@ -3306,7 +3310,7 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    const b_name_idx = string_table.get("B").?;
+    const b_name_idx = string_table.lookupByName("B") orelse unreachable;
     _ = frame.put(b_name_idx, b_arr, b_data, b_buffers[0..2]);
 
     const c_data = try alloc.alloc(f64, 1);
@@ -3327,7 +3331,7 @@ test "provenance: all_provenance_built" {
         .release = null,
         .private_data = null,
     };
-    const c_name_idx = string_table.get("C").?;
+    const c_name_idx = string_table.lookupByName("C") orelse unreachable;
     _ = frame.put(c_name_idx, c_arr, c_data, c_buffers[0..2]);
 
     var result = try buildAllProvenance(&frame, &registry, alloc);
